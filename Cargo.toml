@@ -1,0 +1,22 @@
+[package]
+name = "blemacd"
+version = "0.1.0"
+authors = ["Dimitri Fedorov <dimitri.fedorov@suprematic.net>"]
+edition = "2018"
+license = "MIT OR Apache-2.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+log = "0.4.11"
+env_logger = "0.8.2"
+clap = "3.0.0-beta.2"
+chrono = "0.4.19"
+core_bluetooth = "0.1.0"
+async-std = "1.8.0"
+async-macros = "2.0.0"
+futures = "0.3.8"
+async-channel = "1.5.1"
+parallel-stream = "2.1.2"
+regex = "1.4.3"
+uuid = { version = "0.8", features = ["v4"] }
