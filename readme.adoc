@@ -5,132 +5,12 @@
 
 This daemon is based on Apple's {url-corebt}[CoreBluetooth library].
 
-
-== Intro
-
-This daemon uses a bluez-like object path like `/<DEVICE>/<SERVICE>/<CHARACTERISTIC>`.
-Path can be specified at start or changed by issuing commands.
-Daemon maintains connection to device, service or characteristic specified by this path for faster interaction.
-
-Root: `/`::
-Maintains list of BLE devices, no connections are established
-
-Device: `/DEVICE_UUID`::
-Connects to specified device
-
-Service: `/DEVICE_UUID/SERVICE_UUID`::
-Connects to service of specified device
-
-Characteristic: `/DEVICE_UUID/SERVICE_UUID/CHARACTERISTIC_UUID`::
-Connects to specified characteristic for specified service on device
-
-
-== Starting up
-
-[source,shell]
-----
-blemacd <OBJECT_PATH>
-----
-
-== Stopping
-
-TODO
-
-=== Options
-
-`--path /tmp/blemacd.sock`::
-Specifies the path for Unix Socket. `/tmp/blemacd.sock` is the default.
-
-
-== Usage
-
-=== Issuing commands
-Commands are issued by writing text-based commands to the socket. I.e. with `nc`:
-
-Connect socket and input/output via std.
-[source,shell]
-----
-nc -U /tmp/blemacd.sock
-----
-
-
-Send `get` command and exit.
-[source,shell]
-----
-nc -U /tmp/blemacd.sock <<< get
-----
-
-=== Reading
-
-`get`::
-Returns object data at current path
-
-.Result depends on current daemon state
-
-Root::
-List of devices discovered
-
-Device::
-List of services for specified device
-
-Service::
-List of characteristics for specified service
-
-Characteristic::
-Characteristic value
-
-=== Connecting and writing
-
-`<OBJECT_PATH or/and VALUE>`::
-Change current path or write a value
-
-.For example, if daemon is in device mode:
-
-`<SERVICE_UUID>`::
-Will connect to specified service
-
-`<SERVICE_UUID>/<CHARACTERISTIC_UUID>/VALUE`::
-Will write value to specified characteristic
-
-`/<DEVICE_UUID>/<SERVICE_UUID>/<CHARACTERISTIC_UUID>/VALUE`::
-Will connect to device and write value to characteristic
-
-`/<DEVICE_UUID>/<SERVICE_UUID>`::
-Will connect to service of another device
-
-=== Multiple commands
-
-It is possible to specify multiple commands, they will be executed non-parallel, from left to right.
-
-.For daemon in device mode
-`<SERVICE_UUID> <CHARACTERISTIC_UUID>/1 <CHARACTERISTIC_2_UUID>/2`::
-Will connect to service and write values to two characteristics.
-
-`<SERVICE_UUID>/get <SERVICE_UUID>/get`::
-Will list characteristics for two services.
-
-NOTE: Writing characteristic value or using `get` will not change daemon current path.
-
-
-=== Helpers
-
-[source,shell]
-----
-nc localhost 8880 <<< /status
-----
-
-Returns daemon status
-
-==== Stuff to consider:
-
-* connection status
-* devices list from another modes
-* uptime
+The project is a work in progress. There is a link:docs/usage.adoc[draft] on how to use it, but it's not implemented yet.
 
 
 == Known problems
 
-* Platform-specific imports are not resolved by Rust analyzer, https://github.com/rust-analyzer/rust-analyzer/issues/6038[ticket on Github]
+* Platform-specific imports https://github.com/rust-analyzer/rust-analyzer/issues/6038[are not resolved by Rust analyzer]
 
 
 == Open questions
@@ -147,8 +27,10 @@ Returns daemon status
 * Looks like some peripherals can have multiple names
 
 === Backlog
-* https://rust-cli.github.io/book/in-depth/signals.html
-* we need options for commands (like format output)
+
+* Better status (include path and uptime?)
+* https://rust-cli.github.io/book/in-depth/signals.html[Signals handling], namely `Ctrl+C`
+* Options for commands (like format output)
 * Run rustfmt
 * Homebrew formula
 * Colorize output [https://crates.io/crates/colored, https://docs.rs/termcolor, https://crates.io/crates/ansi_term]
@@ -163,11 +45,12 @@ Returns daemon status
 
 === BLE
 
-* https://crates.io/crates/core_bluetooth[Package at crates.io]
+==== core_bluetooth API wrapper
+* https://crates.io/crates/core_bluetooth[At crates.io]
+* https://docs.rs/core_bluetooth/0.1.0/core_bluetooth/#example[At docs.rs with example]
 * https://github.com/pingw33n/rust_core_bluetooth/blob/master/examples/mi_sensor.rs[Example code at Github]
-* https://docs.rs/core_bluetooth/0.1.0/core_bluetooth/#example[Example at docs.rs]
 
-* https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/AboutCoreBluetooth/Introduction.html#//apple_ref/doc/uid/TP40013257[Apple CoreBluetooth]
+* https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/AboutCoreBluetooth/Introduction.html#//apple_ref/doc/uid/TP40013257[CoreBluetooth docs at Apple.com]
 
 ==== Working with HUE
 
@@ -175,7 +58,7 @@ Returns daemon status
 * https://github.com/Mic92/hue-ble-ctl/blob/master/hue-ble-ctl.py[Another Python script at Github]
 * https://github.com/aknowles18/magic-wand/blob/master/philipsHueBluetoothInstructions.md[Discovered service and characteristics UIDS]
 
-==== Similar tools
+==== Bluetooth CLI tools
 
 * https://sensboston.github.io/BLEConsole/[BLE CLI for Windows]
 * https://github.com/toy/blueutil[Bluetooth (not BLE) CLI for OSX]
@@ -193,6 +76,7 @@ https://rust-lang.github.io/async-book/09_example/00_intro.html
 
 * https://doc.rust-lang.org/book/ch15-05-interior-mutability.html[Interior mutability with RefCell]
 * https://doc.rust-lang.org/std/cell/index.html#when-to-choose-interior-mutability[When to choose interior mutability]
+
 
 == Licensing
 

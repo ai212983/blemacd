@@ -1,0 +1,118 @@
+= Usage
+
+WARNING: Documentation below is a draft. As such, it is not implemented yet and subject to change.
+
+== Intro
+
+This daemon uses a bluez-like object path like `/<DEVICE>/<SERVICE>/<CHARACTERISTIC>`.
+Path can be specified at start or changed by issuing commands.
+Daemon maintains connection to device, service or characteristic specified by this path for faster interaction.
+
+Root: `/`::
+Maintains list of BLE devices, no connections are established
+
+Device: `/DEVICE_UUID`::
+Connects to specified device
+
+Service: `/DEVICE_UUID/SERVICE_UUID`::
+Connects to service of specified device
+
+Characteristic: `/DEVICE_UUID/SERVICE_UUID/CHARACTERISTIC_UUID`::
+Connects to specified characteristic for specified service on device
+
+
+== Starting up
+
+[source,shell]
+----
+blemacd <OBJECT_PATH>
+----
+
+== Stopping
+
+TODO
+
+=== Options
+
+`--path /tmp/blemacd.sock`::
+Specifies the path for Unix Socket. `/tmp/blemacd.sock` is the default.
+
+
+== Usage
+
+=== Issuing commands
+Commands are issued by writing text-based commands to the socket. I.e. with `nc`:
+
+Connect socket and input/output via std.
+[source,shell]
+----
+nc -U /tmp/blemacd.sock
+----
+
+
+Send `get` command and exit.
+[source,shell]
+----
+nc -U /tmp/blemacd.sock <<< get
+----
+
+=== Reading
+
+`get`::
+Returns object data at current path
+
+.Result depends on current daemon state
+
+Root::
+List of devices discovered
+
+Device::
+List of services for specified device
+
+Service::
+List of characteristics for specified service
+
+Characteristic::
+Characteristic value
+
+=== Connecting and writing
+
+`<OBJECT_PATH or/and VALUE>`::
+Change current path or write a value
+
+.For example, if daemon is in device mode:
+
+`<SERVICE_UUID>`::
+Will connect to specified service
+
+`<SERVICE_UUID>/<CHARACTERISTIC_UUID>/VALUE`::
+Will write value to specified characteristic
+
+`/<DEVICE_UUID>/<SERVICE_UUID>/<CHARACTERISTIC_UUID>/VALUE`::
+Will connect to device and write value to characteristic
+
+`/<DEVICE_UUID>/<SERVICE_UUID>`::
+Will connect to service of another device
+
+=== Multiple commands
+
+It is possible to specify multiple commands, they will be executed non-parallel, from left to right.
+
+.For daemon in device mode
+`<SERVICE_UUID> <CHARACTERISTIC_UUID>/1 <CHARACTERISTIC_2_UUID>/2`::
+Will connect to service and write values to two characteristics.
+
+`<SERVICE_UUID>/get <SERVICE_UUID>/get`::
+Will list characteristics for two services.
+
+NOTE: Writing characteristic value or using `get` will not change daemon current path.
+
+
+=== Helpers
+
+[source,shell]
+----
+nc localhost 8880 <<< status
+----
+
+Returns daemon status
