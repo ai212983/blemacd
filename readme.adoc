@@ -69,8 +69,8 @@ The project is a work in progress. There is a link:docs/usage.adoc[draft] on how
 
 * https://book.async.rs/tutorial/index.html[async-std tutorial]
 * https://dev.to/x1957/stop-async-std-task-1oa7[How to stop std task]
-
-https://rust-lang.github.io/async-book/09_example/00_intro.html
+* https://rust-lang.github.io/async-book/02_execution/04_executor.html[Build Futures executor]
+* https://rust-lang.github.io/async-book/09_example/00_intro.html[Build concurrent web server]
 
 ==== Interior mutability
 
