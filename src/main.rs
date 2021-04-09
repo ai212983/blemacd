@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 
 use core_bluetooth::central::*;
 
-use blemacd::{handlers::*, Position};
+use blemacd::{handlers::*, Position, central_async::*};
 
 use async_std::{
     io::BufReader,
@@ -18,11 +18,24 @@ use async_std::{
     task,
 };
 use futures::{
-    channel::mpsc, select, sink::SinkExt, stream::Fuse, AsyncBufReadExt, AsyncWriteExt, FutureExt,
+    channel::mpsc, select, pin_mut, sink::SinkExt, stream::Fuse, AsyncBufReadExt, AsyncWriteExt,
     StreamExt,
+    future::{Future, BoxFuture, FutureExt, LocalBoxFuture},
+    task::{waker_ref, ArcWake},
 };
 
 use env_logger::{Builder, Env};
+use std::sync;
+use std::time::Duration;
+use core_bluetooth::uuid::Uuid;
+use core_bluetooth::central::service::Service;
+use core_bluetooth::central::peripheral::Peripheral;
+use core_bluetooth::central::characteristic::{Characteristic, WriteKind};
+use core_bluetooth::error::Error;
+use std::collections::HashSet;
+use retain_mut::RetainMut;
+use async_std::task::{Waker, JoinHandle};
+use core_bluetooth::ManagerState;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 type Sender<T> = mpsc::UnboundedSender<T>;
@@ -41,53 +54,37 @@ const SERVICE: &str = "932c32bd-0000-47a2-835a-a8d455b859dd";
 // on/off service for Philips Hue BLE
 const CHARACTERISTIC: &str = "932c32bd-0002-47a2-835a-a8d455b859dd"; //  on/off characteristic
 
-/*
-fn handle_client(central: &CentralManager, receiver: &Receiver<CentralEvent>, mut stream: UnixStream) {
-let reader = BufReader::new(&stream);
-let mut writer = BufWriter::new(&stream);
 
-// --- Populate handlers according to command line parameters
-
-let mut handlers: HashMap<Position, EventHandler> = HashMap::new();
-
-handlers.insert(Position::Root,
-                EventHandler::Connection(ConnectionHandler { peripheral_uuid: None }));
-
-// --- Run events receiving loop
-
-while let Ok(event) = receiver.recv() {
-    info!("Active handlers: {}", handlers.len());
-    let mut operations: Vec<HandlerOperation> = vec![];
-    for position in Position::iter() {
-        match handlers.get_mut(&position) {
-            Some(handler) =>
-                operations.push(handler.handle_event(&event, &central)),
-            None => {}
-        }
-    }
-    for operation in operations.iter_mut() {
-        match operation {
-            HandlerOperation::Insert(position, handler) => {
-                handlers.insert(*position.deref(), handler.take().unwrap());
-            }
-            _ => {}
-        }
-    }
-    /*
-            println!(" --- peripherals list ---");
-            for p in &peripherals {
-                println!("   {}: {}",
-                         p.peripheral.id(),
-                         p.advertisement_data.local_name().unwrap_or("*** none ***"));
-
-            }*/
+#[derive(Debug)]
+enum CentralEventType {
+    WriteCharacteristicResult,
+    ManagerStateChanged,
 }
 
-
+impl CentralEventType {
+    fn test(&self, event: &CentralEvent) -> Option<CentralEvent> { //TODO(df): Move to macro?
+        match self {
+            CentralEventType::WriteCharacteristicResult =>
+                if let (CentralEvent::WriteCharacteristicResult { .. }) = event {
+                    //Some(*event.to_owned())
+                    None
+                } else {
+                    None
+                },
+            CentralEventType::ManagerStateChanged =>
+                if let (CentralEvent::ManagerStateChanged { .. }) = event {
+                    //Some(*event.to_owned())
+                    None
+                } else {
+                    None
+                },
+            _ => None
+        }
+    }
 }
-*/
 
 async fn accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
+    // https://docs.rs/async-std/0.99.3/async_std/os/unix/net/struct.UnixListener.html
     let listener = UnixListener::bind(path).await?;
     let mut connection_idx: u32 = 0;
     let (broker_sender, broker_receiver) = mpsc::unbounded();
@@ -103,6 +100,39 @@ async fn accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     }
     drop(broker_sender);
     broker_handle.await;
+    Ok(())
+}
+
+async fn socket_connection_loop<P: AsRef<Path>>(path: P) -> Result<()> {
+    let mut central_async = CentralAsync::new();
+    //TODO(df): Think of implementing proposed workflow (with states)
+    task::block_on(
+        async move {
+            central_async.wait(|event, central| {
+                info!("--- {:?}", event);
+                if let CentralEvent::ManagerStateChanged { new_state } = event {
+                    match new_state {
+                        ManagerState::Unsupported => {
+                            eprintln!("Bluetooth is not supported on this system");
+                        }
+                        ManagerState::Unauthorized => {
+                            eprintln!("The app is not authorized to use Bluetooth on this system");
+                        }
+                        ManagerState::PoweredOff => {
+                            eprintln!("Bluetooth is disabled, please enable it");
+                            // TODO(df): Clean up handlers
+                        }
+                        ManagerState::PoweredOn => {
+                            info!("bt is powered on, starting peripherals scan");
+                            central.lock().unwrap().scan();
+                        }
+                        _ => {}
+                    }
+                    return false;
+                }
+                false
+            }).await;
+        });
     Ok(())
 }
 
@@ -134,38 +164,72 @@ async fn connection_loop(mut broker: Sender<Event>, stream: UnixStream, idx: u32
     Ok(())
 }
 
-async fn central_events_loop(mut handlers: Arc<Mutex<HashMap<Position, EventHandler>>>) {
-    let (central, receiver) = CentralManager::new();
+// TODO(df): Generify and implement Futures for interaction with bluetooth central
+// recursive types are available only as structs, see https://github.com/rust-lang/rfcs/issues/1390
+struct CentralOperation {
+    //event_checker: dyn Fn(&CentralEvent) -> Option<Box<CentralOperation>>,
+    //command: dyn FnOnce(&CentralManager),
+    //f: Box<dyn FnOnce(&CentralManager) -> dyn FnOnce(&CentralEvent) -> Option<CentralOperation>>,
+    command: Box<dyn FnOnce(&CentralManager) + Send + 'static>,
+    handler: Box<dyn FnOnce(&CentralEvent) + Send + 'static>,
+    description: String,
+}
 
-    let handlers = Arc::clone(&handlers);
+async fn central_events_loop(mut legacy_handlers: Arc<Mutex<HashMap<Position, EventHandler>>>, mut control_receiver: Receiver<CentralOperation>) {
+    let (central, mut receiver) = CentralManager::new();
 
-    handlers.lock().unwrap().insert(
+    let legacy_handlers = Arc::clone(&legacy_handlers);
+
+    let mut handlers: Vec<Box<dyn FnOnce(&CentralEvent) + Send + 'static>> = vec![];
+
+    let central = Arc::new(central);
+
+    legacy_handlers.lock().unwrap().insert(
         Position::Root,
         EventHandler::Connection(ConnectionHandler::new()),
     );
 
-    while let Ok(event) = receiver.recv() {
-        //info!("Active handlers: {}", handlers.len());
-        let mut operations: Vec<HandlerOperation> = vec![];
-        for position in Position::iter() {
-            match handlers.lock().unwrap().get_mut(&position) {
-                Some(handler) => operations.push(handler.handle_event(&event, &central)),
-                None => {}
-            }
-        }
-        for operation in operations.iter_mut() {
-            match operation {
-                HandlerOperation::Insert(position, handler) => {
-                    handlers
-                        .lock()
-                        .unwrap()
-                        .insert(*position.deref(), handler.take().unwrap());
+    let mut receiver = receiver.fuse();
+    let mut control_receiver = control_receiver.fuse();
+
+    // primary central loop
+    loop {
+        let event = select! {
+            event = receiver.next() => (event, None),
+            event = control_receiver.next() => (None, event)
+        };
+
+        match event {
+            (Some(event), _) => {
+                let mut operations: Vec<HandlerOperation> = vec![];
+                for position in Position::iter() {
+                    match legacy_handlers.lock().unwrap().get_mut(&position) {
+                        Some(handler) => operations.push(handler.handle_event(&event, &central)),
+                        None => {}
+                    }
                 }
-                _ => {}
+                for operation in operations.iter_mut() {
+                    match operation {
+                        HandlerOperation::Insert(position, handler) => {
+                            legacy_handlers
+                                .lock()
+                                .unwrap()
+                                .insert(*position.deref(), handler.take().unwrap());
+                        }
+                        _ => {}
+                    }
+                }
             }
+            (_, Some(event)) => {
+                println!("incoming CentralOperation {}", event.description);
+                (event.command)(&central);
+                handlers.push(event.handler);
+            }
+            _ => {}
         }
     }
 }
+
 
 #[derive(Debug)]
 struct Reply {
@@ -182,11 +246,15 @@ impl Reply {
     }
 }
 
+// Base logic taken from https://book.async.rs/tutorial/handling_disconnection.html#final-code
 async fn broker_loop(events: Receiver<Event>) {
     let mut handlers: HashMap<Position, EventHandler> = HashMap::new();
 
+    let (mut request_sender, mut request_receiver) =
+        mpsc::unbounded::<CentralOperation>();
+
     let handlers = Arc::new(Mutex::new(handlers));
-    task::spawn(central_events_loop(handlers.clone()));
+    task::spawn(central_events_loop(handlers.clone(), request_receiver));
 
     let (disconnect_sender, mut disconnect_receiver) =
         mpsc::unbounded::<(u32, Receiver<Reply>, Arc<UnixStream>)>();
@@ -219,9 +287,23 @@ async fn broker_loop(events: Receiver<Event>) {
                 if let Some(peer) = peers.get_mut(&origin) {
                     if let Some(message) = match id.clone().as_str() {
                         "status" => {
+                            request_sender.send(CentralOperation {
+                                command: Box::new(move |central| {
+                                    info!("we got centralmanager, i guess!");
+                                }),
+                                handler: Box::new(move |event| {
+                                    info!("we got centralevent {:?}", event);
+                                    /*
+                                                                        move |event| {
+                                                                            println!("processing event {:?}", event);
+                                                                            None
+                                                                        }*/
+                                }),
+                                description: "test".to_string(),
+                            }).await;
                             let mut handlers = handlers.lock().unwrap();
                             if let EventHandler::Connection(handler) =
-                                handlers.get_mut(&Position::Root).unwrap()
+                            handlers.get_mut(&Position::Root).unwrap()
                             {
                                 Some(format!("{:?}", handler.status))
                             } else {
@@ -231,7 +313,7 @@ async fn broker_loop(events: Receiver<Event>) {
                         "devices" => {
                             let mut handlers = handlers.lock().unwrap();
                             if let EventHandler::Peripherals(handler) =
-                                handlers.get_mut(&Position::Devices).unwrap()
+                            handlers.get_mut(&Position::Devices).unwrap()
                             {
                                 let devices = handler
                                     .peripherals
@@ -254,8 +336,8 @@ async fn broker_loop(events: Receiver<Event>) {
                             message,
                             origin: id.clone(),
                         })
-                        .await
-                        .unwrap()
+                            .await
+                            .unwrap()
                     }
                 }
             }
@@ -278,7 +360,7 @@ async fn broker_loop(events: Receiver<Event>) {
                                 stream.clone(),
                                 shutdown,
                             )
-                            .await;
+                                .await;
 
                             // One-liner will terminate connection_writer_loop fast enough
                             // to leave no pending messages but pending commands to be processed.
@@ -388,8 +470,8 @@ enum Event {
 }
 
 fn spawn_and_log_error<F>(fut: F) -> task::JoinHandle<()>
-where
-    F: Future<Output = Result<()>> + Send + 'static,
+    where
+        F: Future<Output=Result<()>> + Send + 'static,
 {
     task::spawn(async move {
         if let Err(e) = fut.await {
@@ -412,12 +494,26 @@ pub fn main() {
         .format_timestamp_micros()
         .init();
 
-    cleanup_socket();
-
-    task::block_on(accept_loop(SOCKET_PATH))
+    task::block_on(socket_connection_loop(SOCKET_PATH))
         .map_err(|err| eprintln!("{:?}", err))
         .ok();
-
+    /*
+        task::block_on(async move {
+            central_async_loop(SOCKET_PATH).await;
+        });
+    */
+    cleanup_socket();
+    /*
+     let mut app = App::new();
+     task::block_on(async move {
+         app.connect().await;
+     });
+     */
+    /*
+        task::block_on(accept_loop(SOCKET_PATH))
+            .map_err(|err| eprintln!("{:?}", err))
+            .ok();
+    */
     cleanup_socket();
     info!("exiting application");
 
@@ -425,7 +521,6 @@ pub fn main() {
      let (central, receiver) = CentralManager::new();
 
     // https://rust-lang.github.io/async-book/06_multiple_futures/03_select.html
-    // https://users.rust-lang.org/t/multiple-receiver-mpsc-channel-using-arc-mutex-receiver/37798
 
      let central = Arc::new(Mutex::new(central));
      let receiver = Arc::new(Mutex::new(receiver));
@@ -437,7 +532,7 @@ pub fn main() {
      while let Some(stream) = incoming.next().await {
          let mut stream = stream?;
 
-         // https://docs.rs/async-std/0.99.3/async_std/os/unix/net/struct.UnixListener.html
+
          // https://book.async.rs/tutorial/handling_disconnection.html#final-code
 
          info!("incoming stream?");
