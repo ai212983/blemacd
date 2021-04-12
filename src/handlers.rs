@@ -54,7 +54,8 @@ impl fmt::Display for PeripheralInfo {
 pub enum HandlerCommand<T> {
     ListDevices(Box<dyn FnOnce(&HashMap<Uuid, PeripheralInfo>) -> T + Send + 'static>),
     GetStatus(Box<dyn FnOnce(Duration, Option<usize>) -> T + Send + 'static>),
-    FindMatch(String, Box<dyn FnOnce(Option<String>) -> T + Send + 'static>),
+    FindMatch(String, Box<dyn FnOnce(Option<Uuid>) -> T + Send + 'static>),
+    ConnectToDevice(Uuid, Box<dyn FnOnce(Option<Uuid>) -> T + Send + 'static>),
 }
 
 impl<T> HandlerCommand<T> {
@@ -63,7 +64,8 @@ impl<T> HandlerCommand<T> {
         match self {
             ListDevices(_) => "ListDevices",
             GetStatus(_) => "GetStatus",
-            FindMatch(_, _) => "FindMatch"
+            FindMatch(_, _) => "FindMatch",
+            ConnectToDevice(_, _) => "ConnectToDevice",
         }
     }
 }
@@ -84,6 +86,7 @@ impl InitHandler<'_>
         }
     }
 
+    /// execute boxed FnOnce stored in HandlerCommand and return execution result
     pub fn execute<T>(&mut self, command: HandlerCommand<T>) -> T {
         match command {
             HandlerCommand::GetStatus(callback) => {
@@ -173,12 +176,16 @@ impl RootHandler<'_> {
                         for (uuid, peripheral) in &self.peripherals {
                             let uuid_string = uuid.to_string();
                             if uuid_string.contains(s) {
-                                result = Some(uuid_string);
+                                result = Some(*uuid);
                                 break;
                             }
                         }
                         result
                     })
+            },
+            HandlerCommand::ConnectToDevice(uuid, callback) => {
+                // TODO(df): Add async here
+                callback(Some(uuid))
             }
             _ => {
                 //   if let Some(&mut handler) = self.next {

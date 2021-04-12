@@ -223,7 +223,7 @@ async fn broker_loop(events: Receiver<Event>) {
             Event::Command { id, origin } => {
                 if let Some(peer) = peers.get_mut(&origin) {
                     if let Some(message) = match id.clone().as_str() {
-                        "status" => {
+                        "status" => { // TODO(df): Move handler.execute out, return Option<Command>
                             Some(handler.execute(HandlerCommand::GetStatus(Box::new(|uptime, devices| {
                                 let mut status = format!("uptime {}", humantime::format_duration(uptime));
                                 if let Some(devices) = devices {
@@ -245,11 +245,14 @@ async fn broker_loop(events: Receiver<Event>) {
                             }))))
                         }
                         _ => {
-                            if let Some(foundMatch) = handler.execute(HandlerCommand::FindMatch(id.clone(), Box::new(|s| s))) {
-                                Some(foundMatch) // TODO(df): Expand to command call
-                            } else {
-                                None
-                            }
+                            // NOTE: It seems it is impossible to implement async calls with current structure.
+                            // Call below is in the loop for both events and commands processing,
+                            // so it can't both issue the command and wait for the result event.
+                            handler.execute(HandlerCommand::FindMatch(id.clone(), Box::new(|s| s)))
+                                .map_or(None,|uuid| {
+                                    handler.execute(HandlerCommand::ConnectToDevice(uuid, Box::new(|s| s)))
+                                })
+                                .map(|connected_uuid| connected_uuid.to_string())
                         }
                     } {
                         info!("sending: {} to {}", message, id);
