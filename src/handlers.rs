@@ -53,7 +53,8 @@ impl fmt::Display for PeripheralInfo {
 
 pub enum HandlerCommand<T> {
     ListDevices(Box<dyn FnOnce(&HashMap<Uuid, PeripheralInfo>) -> T + Send + 'static>),
-    GetStatus(Box<dyn FnOnce(Duration, Option<usize>) -> T + Send + 'static>)
+    GetStatus(Box<dyn FnOnce(Duration, Option<usize>) -> T + Send + 'static>),
+    FindMatch(String, Box<dyn FnOnce(Option<String>) -> T + Send + 'static>),
 }
 
 impl<T> HandlerCommand<T> {
@@ -61,7 +62,8 @@ impl<T> HandlerCommand<T> {
         use HandlerCommand::*;
         match self {
             ListDevices(_) => "ListDevices",
-            GetStatus(_) => "GetStatus"
+            GetStatus(_) => "GetStatus",
+            FindMatch(_, _) => "FindMatch"
         }
     }
 }
@@ -82,8 +84,7 @@ impl InitHandler<'_>
         }
     }
 
-    pub fn execute<T>(&self, command: HandlerCommand<T>) -> T {
-
+    pub fn execute<T>(&mut self, command: HandlerCommand<T>) -> T {
         match command {
             HandlerCommand::GetStatus(callback) => {
                 callback(
@@ -92,19 +93,17 @@ impl InitHandler<'_>
                         Some(handler.peripherals.len())
                     } else {
                         None
-                    }
+                    },
                 )
             }
             _ => {
-                //   if let Some(&mut handler) = self.next {
-                //       handler.execute(command);
-                //   } else {
-                panic!("Can't execute command {}", command.name());
-                //   }
+                if let Some(handler) = &mut self.next {
+                    handler.execute(command)
+                } else {
+                    panic!("Can't execute command '{}'", command.name());
+                }
             }
         }
-
-
     }
 
     pub fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
@@ -142,7 +141,6 @@ impl InitHandler<'_>
             handler.handle_event(event, central);
         }
     }
-
 }
 
 struct RootHandler<'a> {
@@ -160,17 +158,34 @@ impl RootHandler<'_> {
         }
     }
 
-    fn execute<T>(&self, command: HandlerCommand<T>) -> T {
+    fn execute<T>(&mut self, command: HandlerCommand<T>) -> T {
         match command {
             HandlerCommand::ListDevices(callback) => {
                 callback(&self.peripherals)
             }
+            HandlerCommand::FindMatch(substring, callback) => {
+                callback(
+                    if let Some(handler) = &mut self.next {
+                        None // TODO(df): Add matching for next
+                    } else {
+                        let s = substring.as_str();
+                        let mut result = None;
+                        for (uuid, peripheral) in &self.peripherals {
+                            let uuid_string = uuid.to_string();
+                            if uuid_string.contains(s) {
+                                result = Some(uuid_string);
+                                break;
+                            }
+                        }
+                        result
+                    })
+            }
             _ => {
-             //   if let Some(&mut handler) = self.next {
-             //       handler.execute(command);
-             //   } else {
-                    panic!("Can't execute command {}", command.name());
-             //   }
+                //   if let Some(&mut handler) = self.next {
+                //       handler.execute(command);
+                //   } else {
+                panic!("Can't execute command {}", command.name());
+                //   }
             }
         }
     }
@@ -249,7 +264,6 @@ impl RootHandler<'_> {
             _ => {}
         }
     }
-
 }
 
 struct DeviceHandler<'a> {

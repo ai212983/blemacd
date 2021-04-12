@@ -244,7 +244,13 @@ async fn broker_loop(events: Receiver<Event>) {
                                 )
                             }))))
                         }
-                        _ => None,
+                        _ => {
+                            if let Some(foundMatch) = handler.execute(HandlerCommand::FindMatch(id.clone(), Box::new(|s| s))) {
+                                Some(foundMatch) // TODO(df): Expand to command call
+                            } else {
+                                None
+                            }
+                        }
                     } {
                         info!("sending: {} to {}", message, id);
                         peer.send(Reply {
