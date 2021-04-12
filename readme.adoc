@@ -28,7 +28,7 @@ The project is a work in progress. There is a link:docs/usage.adoc[draft] on how
 
 === Backlog
 
-* Better status (include path and uptime?)
+* Better status (include path, number of connections and uptime?)
 * https://rust-cli.github.io/book/in-depth/signals.html[Signals handling], namely `Ctrl+C`
 * Options for commands (like format output)
 * Run rustfmt

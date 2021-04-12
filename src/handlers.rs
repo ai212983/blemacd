@@ -10,6 +10,10 @@ use core_bluetooth::*;
 
 use crate::Position;
 use core::fmt;
+use std::time::{Instant, Duration};
+use core_bluetooth::central::service::Service;
+use async_std::sync::Arc;
+use std::fmt::{Debug, Formatter};
 
 const PERIPHERAL: &str = "fe3c678b-ab90-42ea-97d8-d13047ffdaa4";
 // local hue lamp. THIS ID WILL BE DIFFERENT FOR ANOTHER DEVICE!
@@ -22,12 +26,6 @@ const CHARACTERISTIC: &str = "932c32bd-0002-47a2-835a-a8d455b859dd"; //  on/off 
 // --- Implementation draft ----------------------------------------------------
 // https://stackoverflow.com/questions/27957103/how-do-i-create-a-heterogeneous-collection-of-objects
 // https://play.rust-lang.org/?version=stable&mode=debug&edition=2018&gist=308ca372ab13fdb3ecec6f4a3702895d
-
-pub enum HandlerOperation {
-    None,
-    Remove(Position),
-    Insert(Position, Option<EventHandler>),
-}
 
 #[derive(Debug)]
 pub struct PeripheralInfo {
@@ -53,34 +51,47 @@ impl fmt::Display for PeripheralInfo {
     }
 }
 
-pub trait Handler: 'static {
-    // TODO(df): Do we need lifetime here?
-    fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) -> HandlerOperation;
-    fn position(&self) -> Position;
+pub enum HandlerCommand<T> {
+    ListDevices(Box<dyn FnOnce(&HashMap<Uuid, PeripheralInfo>) -> T + Send + 'static>)
 }
 
-pub struct ConnectionHandler {
-    pub peripheral_uuid: Option<String>,
-    pub status: ManagerState,
+impl<T> HandlerCommand<T> {
+    fn name(&self) -> &'static str {
+        use HandlerCommand::*;
+        match self {
+            ListDevices(_) => "ListDevices"
+        }
+    }
 }
 
-impl ConnectionHandler {
+pub struct InitHandler<'a> {
+    started_at: Instant,
+    state: ManagerState,
+    next: Option<RootHandler<'a>>,
+}
+
+impl InitHandler<'_>
+{
     pub fn new() -> Self {
         Self {
-            peripheral_uuid: None,
-            status: ManagerState::Unknown,
+            started_at: Instant::now(),
+            state: ManagerState::Unknown,
+            next: None,
         }
     }
 
-    pub fn get_status(&self) -> ManagerState {
-        return self.status;
+    pub fn execute<T>(&self, command: HandlerCommand<T>) -> T {
+        if let Some(handler) = &self.next {
+            handler.execute(command)
+        } else {
+            panic!("Can't execute command {}", command.name());
+        }
     }
-}
 
-impl Handler for ConnectionHandler {
-    fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) -> HandlerOperation {
+    pub fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
         if let CentralEvent::ManagerStateChanged { new_state } = event {
-            self.status = *new_state;
+            println!("New state event: {:?}", event);
+            self.state = *new_state;
             match new_state {
                 ManagerState::Unsupported => {
                     eprintln!("Bluetooth is not supported on this system");
@@ -92,54 +103,70 @@ impl Handler for ConnectionHandler {
                 }
                 ManagerState::PoweredOff => {
                     eprintln!("Bluetooth is disabled, please enable it");
-                    return HandlerOperation::Remove(Position::Devices);
-                    // TODO(df): Clean up handlers
+                    // TODO(df): Clean up child handler
                 }
                 ManagerState::PoweredOn => {
-                    //info!("bt is powered on, starting peripherals scan");
-                    match &self.peripheral_uuid {
-                        Some(uuid) => central.get_peripherals(&[uuid.parse().unwrap()]),
-                        None => central.scan(),
-                    }
-                    return HandlerOperation::Insert(
-                        Position::Devices,
-                        Option::Some(EventHandler::Peripherals(PeripheralsHandler {
-                            connected_peripherals: HashSet::new(),
-                            peripherals: HashMap::new(),
-                        })),
-                    );
+                    info!("bt is powered on, starting peripherals scan");
+                    // match &self.peripheral_uuid {
+                    //    Some(uuid) => central.get_peripherals(&[uuid.parse().unwrap()]),
+                    //    None => central.scan(),
+                    //}
+                    central.scan();
+                    self.next = Some(RootHandler::new());
                     //TODO(df): Run different type of peripherals search depending on params
                     //central.get_peripherals_with_services(&[SERVICE.parse().unwrap()]) // TODO(df): Implement connection by service uuid
                     //central.scan();
                 }
                 _ => {}
             }
+        } else if let Some(handler) = &mut self.next {
+            handler.handle_event(event, central);
         }
-        HandlerOperation::None
     }
 
-    fn position(&self) -> Position {
-        Position::Root
+    pub fn get_status(&self) -> String {
+        format!("uptime: {}\n", humantime::format_duration(Duration::new(self.started_at.elapsed().as_secs(), 0)))
     }
 }
 
-pub struct PeripheralsHandler {
-    pub connected_peripherals: HashSet<Peripheral>,
-    pub peripherals: HashMap<Uuid, PeripheralInfo>,
+struct RootHandler<'a> {
+    connected_peripherals: HashSet<Peripheral>,
+    peripherals: HashMap<Uuid, PeripheralInfo>,
+    next: Option<DeviceHandler<'a>>,
 }
 
-//TODO(df): We can use different type of events (list all, get by UID)
-impl Handler for PeripheralsHandler {
-    //, peripherals: &mut HashSet<PeripheralInfo>
-    fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) -> HandlerOperation {
-        //println!("Peripherals event {:?}", event);
+impl RootHandler<'_> {
+    fn new() -> Self {
+        Self {
+            connected_peripherals: HashSet::new(),
+            peripherals: HashMap::new(),
+            next: None,
+        }
+    }
+
+    fn execute<T>(&self, command: HandlerCommand<T>) -> T {
+        match command {
+            HandlerCommand::ListDevices(callback) => {
+                callback(&self.peripherals)
+            }
+            _ => {
+             //   if let Some(&mut handler) = self.next {
+             //       handler.execute(command);
+             //   } else {
+                    panic!("Can't execute command {}", command.name());
+             //   }
+            }
+        }
+    }
+
+    fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
         match event {
             CentralEvent::PeripheralDiscovered {
                 peripheral,
                 advertisement_data,
                 rssi: _,
             } => {
-                //println!("Discovered by UIDs result: {}", self.connected_peripherals.len());
+                println!("[PeripheralDiscovered]: {}", self.peripherals.len());
                 self.peripherals.insert(
                     peripheral.id(),
                     PeripheralInfo {
@@ -162,7 +189,7 @@ impl Handler for PeripheralsHandler {
                 tag: _,
             } => {
                 for peripheral in peripherals {
-                    //println!("Discovered by UIDs result: {}", peripheral.id());
+                    println!("[GetPeripheralsResult]: {}", peripheral.id());
 
                     //  if let Some(d) = data.get(&TypeId::of::<ConnectionHandler>()).unwrap().downcast_ref::<RefCell<ConnectionHandler>>() {
                     //     println!("entry found: {:#?}", d.deref().borrow().connection_state);
@@ -193,7 +220,7 @@ impl Handler for PeripheralsHandler {
                 peripherals,
                 tag: _,
             } => {
-                //println!("Discovered by UIDs result B: {}", peripherals.len());
+                println!("[GetPeripheralsWithServicesResult]: {}", peripherals.len());
                 for peripheral in peripherals {
                     //println!("Discovered with result: {}", peripheral.id());
                     /*    if self.connected_peripherals.insert(p.clone()) {
@@ -202,6 +229,31 @@ impl Handler for PeripheralsHandler {
                     }*/
                 }
             }
+
+            _ => {}
+        }
+    }
+}
+
+struct DeviceHandler<'a> {
+    peripheral: &'a Peripheral,
+    services: HashMap<Uuid, Service>,
+}
+
+impl<'a> DeviceHandler<'a> {
+    fn new(peripheral: &'a Peripheral) -> Self {
+        Self {
+            peripheral,
+            services: HashMap::new(),
+        }
+    }
+
+    fn execute<T>(&self, command: HandlerCommand<T>) -> T {
+        panic!("Can't execute command {}", command.name());
+    }
+
+    fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
+        match event {
             CentralEvent::ServicesDiscovered {
                 peripheral,
                 services,
@@ -249,37 +301,6 @@ impl Handler for PeripheralsHandler {
             }
 
             _ => {}
-        }
-        HandlerOperation::None
-    }
-
-    fn position(&self) -> Position {
-        Position::Devices
-    }
-}
-
-//
-
-// Using enum wrappers for series of trait implementations,
-// see https://bennetthardwick.com/blog/dont-use-boxed-trait-objects-for-struct-internals/
-
-pub enum EventHandler {
-    Connection(ConnectionHandler),
-    Peripherals(PeripheralsHandler),
-}
-
-impl Handler for EventHandler {
-    fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) -> HandlerOperation {
-        match self {
-            EventHandler::Connection(handler) => handler.handle_event(event, central),
-            EventHandler::Peripherals(handler) => handler.handle_event(event, central),
-        }
-    }
-
-    fn position(&self) -> Position {
-        match self {
-            EventHandler::Connection(handler) => handler.position(),
-            EventHandler::Peripherals(handler) => handler.position(),
         }
     }
 }

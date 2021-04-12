@@ -19,5 +19,5 @@ futures = "0.3.8"
 async-channel = "1.6.1"
 parallel-stream = "2.1.2"
 regex = "1.4.3"
-retain_mut = "0.1.2"
+humantime = "2.1.0"
 uuid = { version = "0.8", features = ["v4"] }

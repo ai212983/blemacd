@@ -5,23 +5,28 @@ pub mod central_async;
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone, Copy)]
 pub enum Position {
+    Init,
     Root,
-    Devices,
-    Services,
-    Characteristics,
+    Device,
+    Service,
+    Characteristic,
 }
 
 impl Position {
+    const COUNT: usize = 5;
+
     pub fn iter() -> Iter<'static, Position> {
-        static POSITIONS: [Position; 4] = [
+        static POSITIONS: [Position; Position::COUNT] = [
+            Position::Init,
             Position::Root,
-            Position::Devices,
-            Position::Services,
-            Position::Characteristics,
+            Position::Device,
+            Position::Service,
+            Position::Characteristic,
         ];
         POSITIONS.iter()
     }
-    pub fn count() -> u32 {
-        return 4;
+
+    pub fn count() -> usize {
+        return Position::COUNT;
     }
 }
