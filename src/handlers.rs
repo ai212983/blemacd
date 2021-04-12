@@ -52,14 +52,16 @@ impl fmt::Display for PeripheralInfo {
 }
 
 pub enum HandlerCommand<T> {
-    ListDevices(Box<dyn FnOnce(&HashMap<Uuid, PeripheralInfo>) -> T + Send + 'static>)
+    ListDevices(Box<dyn FnOnce(&HashMap<Uuid, PeripheralInfo>) -> T + Send + 'static>),
+    GetStatus(Box<dyn FnOnce(Duration, Option<usize>) -> T + Send + 'static>)
 }
 
 impl<T> HandlerCommand<T> {
     fn name(&self) -> &'static str {
         use HandlerCommand::*;
         match self {
-            ListDevices(_) => "ListDevices"
+            ListDevices(_) => "ListDevices",
+            GetStatus(_) => "GetStatus"
         }
     }
 }
@@ -81,11 +83,28 @@ impl InitHandler<'_>
     }
 
     pub fn execute<T>(&self, command: HandlerCommand<T>) -> T {
-        if let Some(handler) = &self.next {
-            handler.execute(command)
-        } else {
-            panic!("Can't execute command {}", command.name());
+
+        match command {
+            HandlerCommand::GetStatus(callback) => {
+                callback(
+                    Duration::new(self.started_at.elapsed().as_secs(), 0),
+                    if let Some(handler) = &self.next {
+                        Some(handler.peripherals.len())
+                    } else {
+                        None
+                    }
+                )
+            }
+            _ => {
+                //   if let Some(&mut handler) = self.next {
+                //       handler.execute(command);
+                //   } else {
+                panic!("Can't execute command {}", command.name());
+                //   }
+            }
         }
+
+
     }
 
     pub fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
@@ -124,9 +143,6 @@ impl InitHandler<'_>
         }
     }
 
-    pub fn get_status(&self) -> String {
-        format!("uptime: {}\n", humantime::format_duration(Duration::new(self.started_at.elapsed().as_secs(), 0)))
-    }
 }
 
 struct RootHandler<'a> {
@@ -233,6 +249,7 @@ impl RootHandler<'_> {
             _ => {}
         }
     }
+
 }
 
 struct DeviceHandler<'a> {

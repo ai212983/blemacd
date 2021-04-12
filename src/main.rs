@@ -224,7 +224,13 @@ async fn broker_loop(events: Receiver<Event>) {
                 if let Some(peer) = peers.get_mut(&origin) {
                     if let Some(message) = match id.clone().as_str() {
                         "status" => {
-                            Some(handler.get_status())
+                            Some(handler.execute(HandlerCommand::GetStatus(Box::new(|uptime, devices| {
+                                let mut status = format!("uptime {}", humantime::format_duration(uptime));
+                                if let Some(devices) = devices {
+                                    status = status + &*format!(", {} devices detected", devices);
+                                }
+                                status
+                            }))))
                         }
                         "devices" => {
                             Some(handler.execute(HandlerCommand::ListDevices(Box::new(|devices| {
