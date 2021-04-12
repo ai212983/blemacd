@@ -9,17 +9,17 @@ use futures::{StreamExt, future::Future};
 use core_bluetooth::central::{CentralManager, CentralEvent};
 
 
-pub struct CentralFuture {
-    state: Arc<Mutex<CentralFutureState>>
+pub struct CentralFuture<T> {
+    state: Arc<Mutex<CentralFutureState<T>>>
 }
 
-struct CentralFutureState {
-    event: Option<Arc<Mutex<CentralEvent>>>,
+struct CentralFutureState<T> {
+    event: Option<T>,
     waker: Option<Waker>,
 }
 
-impl Future for CentralFuture {
-    type Output = Arc<Mutex<CentralEvent>>;
+impl<T> Future for CentralFuture<T> {
+    type Output = T;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut state = self.state.lock().unwrap();
         if state.event.is_some() {
@@ -77,7 +77,7 @@ impl CentralAsync {
     }
 
     //fn execute_and_wait(&'static mut self, predicate: Box<dyn Fn(&CentralEvent) -> bool + Send + 'static>, execute: impl FnOnce(&CentralManager)) -> CentralFuture {
-    pub fn wait(&mut self, predicate: impl Fn(&CentralEvent, Arc<Mutex<CentralManager>>) -> bool + Send + 'static) -> CentralFuture {
+    pub fn wait<T: Send + 'static>(&mut self, predicate: impl Fn(&CentralEvent, Arc<Mutex<CentralManager>>) -> Option<T> + Send + 'static) -> CentralFuture<T> {
         let state = Arc::new(Mutex::new(CentralFutureState {
             event: None,
             waker: None,
@@ -89,12 +89,16 @@ impl CentralAsync {
         task::spawn(async move {
             while let Some(event_origin) = receiver.next().await {
                 let event = event_origin.lock().unwrap();
-                if predicate(&event, central.clone()) {
-                    let mut state = cloned.lock().unwrap();
-                    state.event = Some(event_origin.clone());
-                    if let Some(waker) = state.waker.take() {
-                        waker.wake()
-                    }
+                let res = predicate(&event, central.clone());
+                match res {
+                    Some(val) => {
+                        let mut state = cloned.lock().unwrap();
+                        state.event = Some(val);
+                        if let Some(waker) = state.waker.take() {
+                            waker.wake()
+                        }
+                    },
+                    None => {}
                 }
             }
         });

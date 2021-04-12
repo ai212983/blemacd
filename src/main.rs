@@ -108,7 +108,7 @@ async fn socket_connection_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     //TODO(df): Think of implementing proposed workflow (with states)
     task::block_on(
         async move {
-            central_async.wait(|event, central| {
+            let state = central_async.wait(|event, central| {
                 info!("--- {:?}", event);
                 if let CentralEvent::ManagerStateChanged { new_state } = event {
                     match new_state {
@@ -128,10 +128,12 @@ async fn socket_connection_loop<P: AsRef<Path>>(path: P) -> Result<()> {
                         }
                         _ => {}
                     }
-                    return false;
+                    return Some(*new_state);
                 }
-                false
+                None
             }).await;
+
+            info!("State received: {:?}", state);
         });
     Ok(())
 }
@@ -421,16 +423,16 @@ pub fn main() {
 
     cleanup_socket();
 
-    /*
+
         task::block_on(socket_connection_loop(SOCKET_PATH))
             .map_err(|err| eprintln!("{:?}", err))
             .ok();
-    */
 
+/*
     task::block_on(streams_accept_loop(SOCKET_PATH))
         .map_err(|err| eprintln!("{:?}", err))
         .ok();
-
+*/
     /*
         task::block_on(async move {
             central_async_loop(SOCKET_PATH).await;
