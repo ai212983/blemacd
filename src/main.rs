@@ -55,50 +55,18 @@ const SERVICE: &str = "932c32bd-0000-47a2-835a-a8d455b859dd";
 const CHARACTERISTIC: &str = "932c32bd-0002-47a2-835a-a8d455b859dd"; //  on/off characteristic
 
 
-#[derive(Debug)]
-enum CentralEventType {
-    WriteCharacteristicResult,
-    ManagerStateChanged,
-}
-
-impl CentralEventType {
-    fn test(&self, event: &CentralEvent) -> Option<CentralEvent> { //TODO(df): Move to macro?
-        match self {
-            CentralEventType::WriteCharacteristicResult =>
-                if let (CentralEvent::WriteCharacteristicResult { .. }) = event {
-                    //Some(*event.to_owned())
-                    None
-                } else {
-                    None
-                },
-            CentralEventType::ManagerStateChanged =>
-                if let (CentralEvent::ManagerStateChanged { .. }) = event {
-                    //Some(*event.to_owned())
-                    None
-                } else {
-                    None
-                },
-            _ => None
-        }
-    }
-}
-
 async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     // https://docs.rs/async-std/0.99.3/async_std/os/unix/net/struct.UnixListener.html
     let listener = UnixListener::bind(path).await?;
     let mut connection_idx: u32 = 0;
     let (broker_sender, broker_receiver) = mpsc::unbounded();
 
-    let central_async = CentralAsync::new();
-    let mut central_events = central_async.receiver.clone();
-    let central = central_async.central;
-
-    let broker_handle = task::spawn(broker_loop(broker_receiver, central, central_events));
+    let broker_handle = task::spawn(broker_loop(broker_receiver));
     let mut incoming = listener.incoming();
     while let Some(stream) = incoming.next().await {
         let stream = stream?;
         info!("incoming connection: {:?}", stream.peer_addr()?);
-        spawn_and_log_error(connection_loop(broker_sender.clone(), stream, {
+        spawn_and_log_error(connection_reader_loop(broker_sender.clone(), stream, {
             connection_idx += 1;
             connection_idx
         }));
@@ -110,7 +78,6 @@ async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
 
 async fn socket_connection_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     let mut central_async = CentralAsync::new();
-    //TODO(df): Think of implementing proposed workflow (with states)
     task::block_on(
         async move {
             let state = central_async.wait(|event, central| {
@@ -144,7 +111,7 @@ async fn socket_connection_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     Ok(())
 }
 
-async fn connection_loop(mut broker: Sender<Event>, stream: UnixStream, idx: u32) -> Result<()> {
+async fn connection_reader_loop(mut broker: Sender<Event>, stream: UnixStream, idx: u32) -> Result<()> {
     let stream = Arc::new(stream);
     let reader = BufReader::new(&*stream);
     let mut lines = AsyncBufReadExt::lines(reader);
@@ -172,6 +139,30 @@ async fn connection_loop(mut broker: Sender<Event>, stream: UnixStream, idx: u32
     Ok(())
 }
 
+async fn connection_writer_loop(
+    messages: &mut Receiver<Reply>,
+    stream: Arc<UnixStream>,
+    shutdown: Receiver<Void>) -> Result<()> {
+    let mut stream = &*stream;
+    let mut events = FusedStream::new(Box::pin(messages), Box::pin(shutdown.fuse()));
+
+    while let Some(event) = events.next().await {
+        // this is SOMETIMES triggered with one liners
+        if let Some(r) = &event.reply {
+            let s = if event.shutdown {
+                r.as_oneliner()
+            } else {
+                r.as_reply()
+            };
+            AsyncWriteExt::write_all(&mut stream, s.as_bytes()).await?;
+        }
+
+        if event.shutdown {
+            break;
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 struct Reply {
@@ -189,9 +180,13 @@ impl Reply {
 }
 
 // Base logic taken from https://book.async.rs/tutorial/handling_disconnection.html#final-code
-/// All business logic happens in this function
-async fn broker_loop(events: Receiver<Event>, central: CentralManager, central_events: async_channel::Receiver<Arc<Mutex<CentralEvent>>>) {
+async fn broker_loop(events: Receiver<Event>) {
     let mut handler = InitHandler::new();
+
+    let mut central_async = CentralAsync::new();
+    let mut central_events = central_async.receiver.clone();
+    let central = central_async.central;
+
 
     let (disconnect_sender, mut disconnect_receiver) =
         mpsc::unbounded::<(u32, Receiver<Reply>, Arc<UnixStream>)>();
@@ -231,6 +226,13 @@ async fn broker_loop(events: Receiver<Event>, central: CentralManager, central_e
             Event::CentralEvent(event) => {
                 handler.handle_event(&event.lock().unwrap(), &central);
             }
+            // When processing commands, broker_loop job is to execute command and return Reply
+            // to be processed by connection_writer_loop.
+            // Some commands can be done immediately, like status or peripherals list.
+            // They can be done in main broker_loop execution thread.
+            // Other commands requires time to be processed, like connect to peripheral,
+            // discover service, read from characteristic. They shouldn't block execution thread,
+            // so new task::spawn will be created.
             Event::Command { id, origin } => {
                 if let Some(peer) = peers.get_mut(&origin) {
                     if let Some(message) = match id.clone().as_str() {
@@ -243,7 +245,7 @@ async fn broker_loop(events: Receiver<Event>, central: CentralManager, central_e
                                 status
                             }))))
                         }
-                        "devices" => {
+                        "all" => {
                             Some(handler.execute(HandlerCommand::ListDevices(Box::new(|devices| {
                                 let devices = devices.values()
                                     .map(|p| p.to_string())
@@ -256,11 +258,15 @@ async fn broker_loop(events: Receiver<Event>, central: CentralManager, central_e
                             }))))
                         }
                         _ => {
-                            // NOTE: It seems it is impossible to implement async calls with current structure.
-                            // Call below is in the loop for both events and commands processing,
-                            // so it can't both issue the command and wait for the result event.
                             handler.execute(HandlerCommand::FindMatch(id.clone(), Box::new(|s| s)))
                                 .map_or(None, |uuid| {
+                                    task::spawn(central_async.wait(|event, central | {
+                                        //TODO(df): Start pending operation, fire reply to peer when done
+
+                                        // important: central_async connection to peripheral != handler connection to peripheral
+                                        // there's should be only one entry point (no HandlerCommand::ConnectToDevice?)
+                                       None
+                                    }));
                                     handler.execute(HandlerCommand::ConnectToDevice(uuid, Box::new(|s| s)))
                                 })
                                 .map(|connected_uuid| connected_uuid.to_string())
@@ -340,6 +346,7 @@ struct FusedEvent {
     shutdown: bool,
 }
 
+// TODO(df): I am pretty sure there is something like this in async streams?
 impl<'a> Stream for FusedStream<'a> {
     type Item = FusedEvent;
 
@@ -362,32 +369,6 @@ impl<'a> Stream for FusedStream<'a> {
             Poll::Pending
         }
     }
-}
-
-async fn connection_writer_loop(
-    messages: &mut Receiver<Reply>,
-    stream: Arc<UnixStream>,
-    shutdown: Receiver<Void>,
-) -> Result<()> {
-    let mut stream = &*stream;
-    let mut events = FusedStream::new(Box::pin(messages), Box::pin(shutdown.fuse()));
-
-    while let Some(event) = events.next().await {
-        // this is SOMETIMES triggered with one liners
-        if let Some(r) = &event.reply {
-            let s = if event.shutdown {
-                r.as_oneliner()
-            } else {
-                r.as_reply()
-            };
-            AsyncWriteExt::write_all(&mut stream, s.as_bytes()).await?;
-        }
-
-        if event.shutdown {
-            break;
-        }
-    }
-    Ok(())
 }
 
 #[derive(Debug)]

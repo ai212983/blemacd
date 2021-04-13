@@ -182,7 +182,7 @@ impl RootHandler<'_> {
                     })
             },
             HandlerCommand::ConnectToDevice(uuid, callback) => {
-                // TODO(df): Add async here
+                // TODO(df): Add async here?
                 callback(Some(uuid))
             }
             _ => {
