@@ -8,12 +8,10 @@ use core_bluetooth::central::*;
 use core_bluetooth::uuid::Uuid;
 use core_bluetooth::*;
 
-use crate::Position;
 use core::fmt;
 use std::time::{Instant, Duration};
 use core_bluetooth::central::service::Service;
-use async_std::sync::Arc;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug};
 
 const PERIPHERAL: &str = "fe3c678b-ab90-42ea-97d8-d13047ffdaa4";
 // local hue lamp. THIS ID WILL BE DIFFERENT FOR ANOTHER DEVICE!
