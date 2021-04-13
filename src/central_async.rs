@@ -1,38 +1,8 @@
 use std::sync::{Arc, Mutex};
-use std::pin::Pin;
-use std::task::{Context, Poll};
 
-use async_std::{task, task::{Waker, JoinHandle}};
-
-use futures::{StreamExt, future::Future};
-
-use core_bluetooth::central::{CentralManager, CentralEvent};
-
-
-pub struct CentralFuture<T> {
-    state: Arc<Mutex<CentralFutureState<T>>>
-}
-
-struct CentralFutureState<T> {
-    event: Option<T>,
-    waker: Option<Waker>,
-}
-
-impl<T> Future for CentralFuture<T> {
-    type Output = T;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut state = self.state.lock().unwrap();
-        if state.event.is_some() {
-            let ev = state.event.take().unwrap();
-            Poll::Ready(ev)
-        } else {
-            // N.B. it's possible to check for this using the `Waker::will_wake`
-            // function, but we omit that here to keep things simple.
-            state.waker = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-}
+use async_std::{task, task::JoinHandle};
+use core_bluetooth::central::{CentralEvent, CentralManager};
+use futures::StreamExt;
 
 // ---------------------------
 
@@ -50,7 +20,7 @@ impl Drop for CentralAsync {
 }
 */
 
-impl CentralAsync {
+impl<'a> CentralAsync {
     pub fn new() -> Self {
 
         // it is possible to use Arc<Mutex<_>> instead of cloneable receiver
@@ -76,38 +46,16 @@ impl CentralAsync {
         }
     }
 
-    //fn execute_and_wait(&'static mut self, predicate: Box<dyn Fn(&CentralEvent) -> bool + Send + 'static>, execute: impl FnOnce(&CentralManager)) -> CentralFuture {
-    pub fn wait<T: Send + 'static>(&mut self, predicate: impl Fn(&CentralEvent, Arc<Mutex<CentralManager>>) -> Option<T> + Send + 'static) -> CentralFuture<T> {
-        let state = Arc::new(Mutex::new(CentralFutureState {
-            event: None,
-            waker: None,
-        }));
-//
-        let mut receiver = self.receiver.clone();
-        let cloned = state.clone();
+    pub async fn wait<T>(&mut self, mut func: impl FnMut(&CentralEvent, &CentralManager) -> Option<T> + 'a) -> Option<T> {
         let central = self.central.clone();
-        task::spawn(async move {
-            while let Some(event_origin) = receiver.next().await {
-                let event = event_origin.lock().unwrap();
-                let res = predicate(&event, central.clone());
-                match res {
-                    Some(val) => {
-                        let mut state = cloned.lock().unwrap();
-                        state.event = Some(val);
-                        if let Some(waker) = state.waker.take() {
-                            waker.wake()
-                        }
-                    },
-                    None => {}
-                }
-            }
-        });
+        use async_std::stream::StreamExt;
 
-        //TODO(df): we may want to start central here
-        CentralFuture { state }
+        self.receiver.clone().find_map(move |event| {
+            let central = central.lock().unwrap();
+            let event = event.lock().unwrap();
+            func(&event, &central)
+        }).await
     }
-
-
     // -----------------
 
     // The aim is to split composite operations into async composable parts.
