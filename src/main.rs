@@ -124,10 +124,11 @@ async fn socket_connection_loop<P: AsRef<Path>>(path: P) -> Result<()> {
                         }
                         ManagerState::PoweredOn => {
                             info!("bt is powered on, starting peripherals scan");
-                            central.lock().unwrap().scan();
+                            central.scan();
                         }
                         _ => {}
                     }
+
                     return Some(*new_state);
                 }
                 None
