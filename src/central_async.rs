@@ -8,8 +8,8 @@ use futures::StreamExt;
 
 
 pub struct CentralAsync {
-    central: CentralManager,
-    receiver: async_channel::Receiver<Arc<Mutex<CentralEvent>>>,
+    pub central: CentralManager,
+    pub receiver: async_channel::Receiver<Arc<Mutex<CentralEvent>>>,
     handle: JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>>,
 }
 

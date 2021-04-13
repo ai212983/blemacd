@@ -193,13 +193,18 @@ async fn broker_loop(events: Receiver<Event>) {
     let mut peers: HashMap<u32, Sender<Reply>> = HashMap::new();
     let mut events = events.fuse();
 
-    let (central, receiver) = CentralManager::new();
-    let mut receiver = receiver.fuse();
+    let central_async = CentralAsync::new();
+
+    let mut receiver = central_async.receiver.clone().fuse();
+
+    let central = central_async.central;
     loop {
         let event = select! {
             event = receiver.next() => match event {
                 None => break,
-                Some(event) => Event::CentralEvent(event)
+                Some(event) => {
+                    Event::CentralEvent(event.clone())
+                }
             },
             event = events.next().fuse() =>match event {
                 None => break,
@@ -221,7 +226,7 @@ async fn broker_loop(events: Receiver<Event>) {
 
         match event {
             Event::CentralEvent(event) => {
-                handler.handle_event(&event, &central);
+                handler.handle_event(&event.lock().unwrap(), &central);
             }
             Event::Command { id, origin } => {
                 if let Some(peer) = peers.get_mut(&origin) {
@@ -252,7 +257,7 @@ async fn broker_loop(events: Receiver<Event>) {
                             // Call below is in the loop for both events and commands processing,
                             // so it can't both issue the command and wait for the result event.
                             handler.execute(HandlerCommand::FindMatch(id.clone(), Box::new(|s| s)))
-                                .map_or(None,|uuid| {
+                                .map_or(None, |uuid| {
                                     handler.execute(HandlerCommand::ConnectToDevice(uuid, Box::new(|s| s)))
                                 })
                                 .map(|connected_uuid| connected_uuid.to_string())
@@ -362,7 +367,6 @@ async fn connection_writer_loop(
     shutdown: Receiver<Void>,
 ) -> Result<()> {
     let mut stream = &*stream;
-
     let mut events = FusedStream::new(Box::pin(messages), Box::pin(shutdown.fuse()));
 
     while let Some(event) = events.next().await {
@@ -394,7 +398,7 @@ enum Event {
         id: String,
         origin: u32,
     },
-    CentralEvent(CentralEvent),
+    CentralEvent(Arc<Mutex<CentralEvent>>),
 }
 
 fn spawn_and_log_error<F>(fut: F) -> task::JoinHandle<()>
@@ -424,21 +428,15 @@ pub fn main() {
 
     cleanup_socket();
 
+    /*        task::block_on(socket_connection_loop(SOCKET_PATH))
+                .map_err(|err| eprintln!("{:?}", err))
+                .ok();
+    */
 
-        task::block_on(socket_connection_loop(SOCKET_PATH))
-            .map_err(|err| eprintln!("{:?}", err))
-            .ok();
-
-/*
     task::block_on(streams_accept_loop(SOCKET_PATH))
         .map_err(|err| eprintln!("{:?}", err))
         .ok();
-*/
-    /*
-        task::block_on(async move {
-            central_async_loop(SOCKET_PATH).await;
-        });
-    */
+
     /*
      let mut app = App::new();
      task::block_on(async move {
