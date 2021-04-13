@@ -184,17 +184,13 @@ async fn broker_loop(events: Receiver<Event>) {
     let mut handler = InitHandler::new();
 
     let mut central_async = CentralAsync::new();
-    let mut central_events = central_async.receiver.clone();
-    let central = central_async.central;
-
+    let central = central_async.central.clone();
+    let mut receiver = central_async.receiver.clone().fuse();
 
     let (disconnect_sender, mut disconnect_receiver) =
         mpsc::unbounded::<(u32, Receiver<Reply>, Arc<UnixStream>)>();
     let mut peers: HashMap<u32, Sender<Reply>> = HashMap::new();
     let mut events = events.fuse();
-
-
-    let mut receiver = central_events.clone().fuse();
 
     loop {
         let event = select! {
@@ -213,7 +209,7 @@ async fn broker_loop(events: Receiver<Event>) {
                 assert!(peers.remove(&idx).is_some());
 
                 let mut stream = &*stream;
-                while let Ok(Some(reply)) = pending_replies.try_next() {
+                while let Ok(Some(reply)) = pending_replies.try_next() { // TODO(df): Prevent dropping stream if there are pending tasks (not only pending replies)
                     AsyncWriteExt::write_all(&mut stream, reply.as_oneliner().as_bytes())
                         .await.ok();
                 }
@@ -224,6 +220,7 @@ async fn broker_loop(events: Receiver<Event>) {
 
         match event {
             Event::CentralEvent(event) => {
+                let central = central.lock().unwrap();
                 handler.handle_event(&event.lock().unwrap(), &central);
             }
             // When processing commands, broker_loop job is to execute command and return Reply
@@ -258,18 +255,48 @@ async fn broker_loop(events: Receiver<Event>) {
                             }))))
                         }
                         _ => {
-                            handler.execute(HandlerCommand::FindMatch(id.clone(), Box::new(|s| s)))
-                                .map_or(None, |uuid| {
-                                    task::spawn(central_async.wait(|event, central | {
-                                        //TODO(df): Start pending operation, fire reply to peer when done
+                            handler.execute(HandlerCommand::FindDevice(id.clone(), Box::new(|s| s)))
+                                .map_or(None, |peripheral_info| {
 
-                                        // important: central_async connection to peripheral != handler connection to peripheral
-                                        // there's should be only one entry point (no HandlerCommand::ConnectToDevice?)
-                                       None
-                                    }));
-                                    handler.execute(HandlerCommand::ConnectToDevice(uuid, Box::new(|s| s)))
+                                    info!("we got match, trying to connect");
+
+                                    // let central = central.clone();
+                                    let mut receiver = central_async.receiver.clone();
+
+                                    task::spawn(async move {
+                                        //let central = central.lock().unwrap();
+                                        use async_std::stream::StreamExt;
+
+                                        receiver.find_map(move |event| {
+                                            let event: &CentralEvent = &event.lock().unwrap();
+                                            match event {
+                                                CentralEvent::PeripheralConnected { peripheral } => {
+                                                    info!("peripheral connected! ");
+                                                    return Some(());
+                                                }
+
+                                                CentralEvent::PeripheralConnectFailed { peripheral, error } => {
+                                                    warn!("failed to connect to peripheral {}", peripheral.id());
+                                                    //cl.connect(&peripheral); // retry
+                                                }
+                                                _ => {}
+                                            }
+
+                                            None
+                                        }).await
+
+                                    });
+
+
+                                    // TODO(df): central_async connection to peripheral != handler connection to peripheral
+                                    // there's should be only one entry point (no HandlerCommand::ConnectToDevice?)
+
+                                    let mut central = central.lock().unwrap();
+                                    central.connect(&peripheral_info.peripheral);
+                                    None
+                                    //handler.execute(HandlerCommand::ConnectToDevice(uuid, Box::new(|s| s)))
                                 })
-                                .map(|connected_uuid| connected_uuid.to_string())
+                            // .map(|connected_uuid| connected_uuid.to_string())
                         }
                     } {
                         info!("sending: {} to {}", message, id);

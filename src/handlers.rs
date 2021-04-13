@@ -25,9 +25,9 @@ const CHARACTERISTIC: &str = "932c32bd-0002-47a2-835a-a8d455b859dd"; //  on/off 
 // https://stackoverflow.com/questions/27957103/how-do-i-create-a-heterogeneous-collection-of-objects
 // https://play.rust-lang.org/?version=stable&mode=debug&edition=2018&gist=308ca372ab13fdb3ecec6f4a3702895d
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PeripheralInfo {
-    peripheral: Peripheral,
+    pub peripheral: Peripheral,
     advertisement_data: AdvertisementData,
     //TODO(df): Peripheral can have multiple names?
 }
@@ -52,7 +52,7 @@ impl fmt::Display for PeripheralInfo {
 pub enum HandlerCommand<T> {
     ListDevices(Box<dyn FnOnce(&HashMap<Uuid, PeripheralInfo>) -> T + Send + 'static>),
     GetStatus(Box<dyn FnOnce(Duration, Option<usize>) -> T + Send + 'static>),
-    FindMatch(String, Box<dyn FnOnce(Option<Uuid>) -> T + Send + 'static>),
+    FindDevice(String, Box<dyn FnOnce(Option<PeripheralInfo>) -> T + Send + 'static>),
     ConnectToDevice(Uuid, Box<dyn FnOnce(Option<Uuid>) -> T + Send + 'static>),
 }
 
@@ -62,7 +62,7 @@ impl<T> HandlerCommand<T> {
         match self {
             ListDevices(_) => "ListDevices",
             GetStatus(_) => "GetStatus",
-            FindMatch(_, _) => "FindMatch",
+            FindDevice(_, _) => "FindMatch",
             ConnectToDevice(_, _) => "ConnectToDevice",
         }
     }
@@ -164,7 +164,7 @@ impl RootHandler<'_> {
             HandlerCommand::ListDevices(callback) => {
                 callback(&self.peripherals)
             }
-            HandlerCommand::FindMatch(substring, callback) => {
+            HandlerCommand::FindDevice(substring, callback) => {
                 callback(
                     if let Some(handler) = &mut self.next {
                         None // TODO(df): Add matching for next
@@ -174,7 +174,7 @@ impl RootHandler<'_> {
                         for (uuid, peripheral) in &self.peripherals {
                             let uuid_string = uuid.to_string();
                             if uuid_string.contains(s) {
-                                result = Some(*uuid);
+                                result = Some(peripheral.clone());
                                 break;
                             }
                         }

@@ -8,7 +8,7 @@ use futures::StreamExt;
 
 
 pub struct CentralAsync {
-    pub central: CentralManager,
+    pub central: Arc<Mutex<CentralManager>>,
     pub receiver: async_channel::Receiver<Arc<Mutex<CentralEvent>>>,
     handle: JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>>,
 }
@@ -31,7 +31,7 @@ impl<'a> CentralAsync {
         let (central, mut central_receiver) = CentralManager::new();
 
         Self {
-            central,
+            central: Arc::new(Mutex::new(central)),
             receiver,
             handle: task::spawn(
                 async move {
@@ -46,7 +46,7 @@ impl<'a> CentralAsync {
     }
 
     pub async fn wait<T>(&mut self, mut func: impl FnMut(&CentralEvent, &CentralManager) -> Option<T> + 'a) -> Option<T> {
-        let central = &self.central;
+        let central = &self.central.lock().unwrap();
         use async_std::stream::StreamExt;
 
         self.receiver.clone().find_map(move |event| {
