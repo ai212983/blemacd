@@ -8,10 +8,11 @@ use futures::StreamExt;
 
 
 pub struct CentralAsync {
-    central: Arc<Mutex<CentralManager>>,
+    central: CentralManager,
     receiver: async_channel::Receiver<Arc<Mutex<CentralEvent>>>,
     handle: JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>>,
 }
+
 /*
 impl Drop for CentralAsync {
     fn drop(&mut self) {
@@ -25,37 +26,35 @@ impl<'a> CentralAsync {
 
         // it is possible to use Arc<Mutex<_>> instead of cloneable receiver
         // https://users.rust-lang.org/t/multiple-receiver-mpsc-channel-using-arc-mutex-receiver/37798
-        let (sender, receiver) = async_channel::unbounded();
 
+        let (sender, receiver) = async_channel::unbounded();
         let (central, mut central_receiver) = CentralManager::new();
 
-        let handle = task::spawn(
-            async move {
-                loop {
-                    while let Some(event) = central_receiver.next().await {
-                        let event = Arc::new(Mutex::new(event));
-                        sender.send(event).await?;
-                    }
-                }
-            });
-
         Self {
-            central: Arc::new(Mutex::new(central)),
+            central,
             receiver,
-            handle,
+            handle: task::spawn(
+                async move {
+                    loop {
+                        while let Some(event) = central_receiver.next().await {
+                            let event = Arc::new(Mutex::new(event));
+                            sender.send(event).await?;
+                        }
+                    }
+                }),
         }
     }
 
     pub async fn wait<T>(&mut self, mut func: impl FnMut(&CentralEvent, &CentralManager) -> Option<T> + 'a) -> Option<T> {
-        let central = self.central.clone();
+        let central = &self.central;
         use async_std::stream::StreamExt;
 
         self.receiver.clone().find_map(move |event| {
-            let central = central.lock().unwrap();
             let event = event.lock().unwrap();
             func(&event, &central)
         }).await
     }
+
     // -----------------
 
     // The aim is to split composite operations into async composable parts.
