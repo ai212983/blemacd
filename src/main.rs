@@ -88,7 +88,12 @@ async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     let listener = UnixListener::bind(path).await?;
     let mut connection_idx: u32 = 0;
     let (broker_sender, broker_receiver) = mpsc::unbounded();
-    let broker_handle = task::spawn(broker_loop(broker_receiver));
+
+    let central_async = CentralAsync::new();
+    let mut central_events = central_async.receiver.clone();
+    let central = central_async.central;
+
+    let broker_handle = task::spawn(broker_loop(broker_receiver, central, central_events));
     let mut incoming = listener.incoming();
     while let Some(stream) = incoming.next().await {
         let stream = stream?;
@@ -185,7 +190,7 @@ impl Reply {
 
 // Base logic taken from https://book.async.rs/tutorial/handling_disconnection.html#final-code
 /// All business logic happens in this function
-async fn broker_loop(events: Receiver<Event>) {
+async fn broker_loop(events: Receiver<Event>, central: CentralManager, central_events: async_channel::Receiver<Arc<Mutex<CentralEvent>>>) {
     let mut handler = InitHandler::new();
 
     let (disconnect_sender, mut disconnect_receiver) =
@@ -193,11 +198,9 @@ async fn broker_loop(events: Receiver<Event>) {
     let mut peers: HashMap<u32, Sender<Reply>> = HashMap::new();
     let mut events = events.fuse();
 
-    let central_async = CentralAsync::new();
 
-    let mut receiver = central_async.receiver.clone().fuse();
+    let mut receiver = central_events.clone().fuse();
 
-    let central = central_async.central;
     loop {
         let event = select! {
             event = receiver.next() => match event {
