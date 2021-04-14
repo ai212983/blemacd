@@ -223,6 +223,9 @@ async fn broker_loop(events: Receiver<Event>) {
                 let central = central.lock().unwrap();
                 handler.handle_event(&event.lock().unwrap(), &central);
             }
+
+            // TODO(df): Probably it makes sense to use just `select!` and process events from different streams separately.
+
             // When processing commands, broker_loop job is to execute command and return Reply
             // to be processed by connection_writer_loop.
             // Some commands can be done immediately, like status or peripherals list.
@@ -336,6 +339,9 @@ async fn broker_loop(events: Receiver<Event>) {
                             // thread where commands are processed (broker_loop).
 
                             // passing Arc<Stream> will prevent dropping stream once we're out of current scope
+
+                            // TODO(df): We need to pass Arc<Stream> to async connection tasks too
+                            // to avoid disconnection when there are no replies yet
                             disconnect_sender
                                 .send((idx, client_receiver, stream.clone()))
                                 .await
