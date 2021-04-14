@@ -58,7 +58,7 @@ const CHARACTERISTIC: &str = "932c32bd-0002-47a2-835a-a8d455b859dd"; //  on/off 
 async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     // https://docs.rs/async-std/0.99.3/async_std/os/unix/net/struct.UnixListener.html
     let listener = UnixListener::bind(path).await?;
-    let mut connection_idx: u32 = 0;
+    let mut peer_idx: u32 = 0;
     let (broker_sender, broker_receiver) = mpsc::unbounded();
 
     let broker_handle = task::spawn(broker_loop(broker_receiver));
@@ -66,9 +66,9 @@ async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     while let Some(stream) = incoming.next().await {
         let stream = stream?;
         info!("incoming connection: {:?}", stream.peer_addr()?);
-        spawn_and_log_error(connection_reader_loop(broker_sender.clone(), stream, {
-            connection_idx += 1;
-            connection_idx
+        spawn_and_log_error(peer_reader_loop(broker_sender.clone(), stream, {
+            peer_idx += 1;
+            peer_idx
         }));
     }
     drop(broker_sender);
@@ -111,14 +111,14 @@ async fn socket_connection_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     Ok(())
 }
 
-async fn connection_reader_loop(mut broker: Sender<Event>, stream: UnixStream, idx: u32) -> Result<()> {
+async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx: u32) -> Result<()> {
     let stream = Arc::new(stream);
     let reader = BufReader::new(&*stream);
     let mut lines = AsyncBufReadExt::lines(reader);
 
     let (_shutdown_sender, shutdown_receiver) = mpsc::unbounded::<Void>();
     broker
-        .send(Event::NewPeer {
+        .send(PeerEvent::NewPeer {
             idx,
             stream: Arc::clone(&stream),
             shutdown: shutdown_receiver,
@@ -128,7 +128,7 @@ async fn connection_reader_loop(mut broker: Sender<Event>, stream: UnixStream, i
 
     while let Some(line) = lines.next().await {
         broker
-            .send(Event::Command {
+            .send(PeerEvent::Command {
                 id: line?,
                 origin: idx,
             })
@@ -139,7 +139,7 @@ async fn connection_reader_loop(mut broker: Sender<Event>, stream: UnixStream, i
     Ok(())
 }
 
-async fn connection_writer_loop(
+async fn peer_writer_loop(
     messages: &mut Receiver<Reply>,
     stream: Arc<UnixStream>,
     shutdown: Receiver<Void>) -> Result<()> {
@@ -180,7 +180,7 @@ impl Reply {
 }
 
 // Base logic taken from https://book.async.rs/tutorial/handling_disconnection.html#final-code
-async fn broker_loop(events: Receiver<Event>) {
+async fn broker_loop(events: Receiver<PeerEvent>) {
     let mut handler = InitHandler::new();
 
     let mut central_async = CentralAsync::new();
@@ -193,14 +193,16 @@ async fn broker_loop(events: Receiver<Event>) {
     let mut events = events.fuse();
 
     loop {
-        let event = select! {
-            event = receiver.next() => match event {
+        let peer_event = select! {
+            central_event = receiver.next() => match central_event {
                 None => break,
                 Some(event) => {
-                    Event::CentralEvent(event.clone())
+                    let central = central.lock().unwrap();
+                    handler.handle_event(&event.lock().unwrap(), &central);
+                    continue;
                 }
             },
-            event = events.next().fuse() =>match event {
+            peer_event = events.next().fuse() => match peer_event {
                 None => break,
                 Some(event) => event,
             },
@@ -218,22 +220,16 @@ async fn broker_loop(events: Receiver<Event>) {
             }
         };
 
-        match event {
-            Event::CentralEvent(event) => {
-                let central = central.lock().unwrap();
-                handler.handle_event(&event.lock().unwrap(), &central);
-            }
-
-            // TODO(df): Probably it makes sense to use just `select!` and process events from different streams separately.
+        match peer_event {
 
             // When processing commands, broker_loop job is to execute command and return Reply
-            // to be processed by connection_writer_loop.
+            // to be processed by peer_writer_loop.
             // Some commands can be done immediately, like status or peripherals list.
             // They can be done in main broker_loop execution thread.
             // Other commands requires time to be processed, like connect to peripheral,
             // discover service, read from characteristic. They shouldn't block execution thread,
             // so new task::spawn will be created.
-            Event::Command { id, origin } => {
+            PeerEvent::Command { id, origin } => {
                 if let Some(peer) = peers.get_mut(&origin) {
                     if let Some(message) = match id.clone().as_str() {
                         "status" => { // TODO(df): Move handler.execute out, return Option<Command>
@@ -260,7 +256,6 @@ async fn broker_loop(events: Receiver<Event>) {
                         _ => {
                             handler.execute(HandlerCommand::FindDevice(id.clone(), Box::new(|s| s)))
                                 .map_or(None, |peripheral_info| {
-
                                     info!("we got match, trying to connect");
 
                                     // let central = central.clone();
@@ -287,7 +282,6 @@ async fn broker_loop(events: Receiver<Event>) {
 
                                             None
                                         }).await
-
                                     });
 
 
@@ -312,7 +306,7 @@ async fn broker_loop(events: Receiver<Event>) {
                     }
                 }
             }
-            Event::NewPeer {
+            PeerEvent::NewPeer {
                 idx,
                 stream,
                 shutdown,
@@ -326,14 +320,13 @@ async fn broker_loop(events: Receiver<Event>) {
                         let mut disconnect_sender = disconnect_sender.clone();
                         // spawning separate thread to send data to peers
                         spawn_and_log_error(async move {
-                            let res = connection_writer_loop(
+                            let res = peer_writer_loop(
                                 &mut client_receiver,
                                 stream.clone(),
                                 shutdown,
-                            )
-                                .await;
+                            ).await;
 
-                            // One-liner will terminate connection_writer_loop fast enough
+                            // One-liner will terminate peer_writer_loop fast enough
                             // to leave no pending messages but pending commands to be processed.
                             // It is critical to close stream and push pending messages in the same
                             // thread where commands are processed (broker_loop).
@@ -405,7 +398,7 @@ impl<'a> Stream for FusedStream<'a> {
 }
 
 #[derive(Debug)]
-enum Event {
+enum PeerEvent {
     NewPeer {
         idx: u32,
         stream: Arc<UnixStream>,
@@ -415,7 +408,6 @@ enum Event {
         id: String,
         origin: u32,
     },
-    CentralEvent(Arc<Mutex<CentralEvent>>),
 }
 
 fn spawn_and_log_error<F>(fut: F) -> task::JoinHandle<()>
