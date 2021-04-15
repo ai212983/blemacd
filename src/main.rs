@@ -58,7 +58,7 @@ const CHARACTERISTIC: &str = "932c32bd-0002-47a2-835a-a8d455b859dd"; //  on/off 
 async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     // https://docs.rs/async-std/0.99.3/async_std/os/unix/net/struct.UnixListener.html
     let listener = UnixListener::bind(path).await?;
-    let mut peer_idx: u32 = 0;
+    let mut peer_id: u32 = 0;
     let (broker_sender, broker_receiver) = mpsc::unbounded();
 
     let broker_handle = task::spawn(broker_loop(broker_receiver));
@@ -67,8 +67,8 @@ async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
         let stream = stream?;
         info!("incoming connection: {:?}", stream.peer_addr()?);
         spawn_and_log_error(peer_reader_loop(broker_sender.clone(), stream, {
-            peer_idx += 1;
-            peer_idx
+            peer_id += 1;
+            peer_id
         }));
     }
     drop(broker_sender);
@@ -115,7 +115,7 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
     let reader = BufReader::new(&*stream);
     let mut lines = AsyncBufReadExt::lines(reader);
 
-    let (_shutdown_sender, shutdown_receiver) = mpsc::unbounded::<Void>();
+    let (shutdown_sender, shutdown_receiver) = mpsc::unbounded::<Void>();
     broker
         .send(PeerEvent::NewPeer {
             idx,
@@ -125,12 +125,13 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
         .await
         .unwrap();
 
+    let shutdown = Arc::new(shutdown_sender);
     while let Some(line) = lines.next().await {
         broker
             .send(PeerEvent::Command {
                 id: line?,
-                origin: idx,
-                stream: stream.clone()
+                peer_id: idx,
+                shutdown: shutdown.clone(),
             })
             .await
             .unwrap();
@@ -216,7 +217,7 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                     AsyncWriteExt::write_all(&mut stream, reply.as_oneliner().as_bytes())
                         .await.ok();
                 }
-                info!("peer #{} disconnection pending, currently connected peers: {}", idx, peers.len());
+                info!("peer #{} disconnected, currently connected peers: {}", idx, peers.len());
                 continue;
             }
         };
@@ -230,8 +231,8 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
             // Other commands requires time to be processed, like connect to peripheral,
             // discover service, read from characteristic. They shouldn't block execution thread,
             // so new task::spawn will be created.
-            PeerEvent::Command { id, origin, stream } => {
-                if let Some(peer) = peers.get_mut(&origin) {
+            PeerEvent::Command { id, peer_id, shutdown } => {
+                if let Some(peer) = peers.get_mut(&peer_id) {
                     if let Some(message) = match id.clone().as_str() {
                         "status" => { // TODO(df): Move handler.execute out? (return Option<Command>)
                             Some(handler.execute(HandlerCommand::GetStatus(Box::new(|uptime, devices| {
@@ -255,7 +256,7 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                             }))))
                         }
                         _ => {
-                            let stream_arc = stream.clone();
+                            let shutdown = shutdown.clone();
                             handler.execute(HandlerCommand::FindDevice(id.clone(), Box::new(|s| s)))
                                 .map_or(None, |peripheral_info| {
                                     let matched_id = peripheral_info.peripheral.id();
@@ -263,48 +264,55 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
 
                                     // let central = central.clone();
                                     let mut receiver = central_async.receiver.clone();
+                                    let mut peer = peer.clone();
+                                    let id = id.clone();
 
                                     task::spawn(async move {
                                         //let central = central.lock().unwrap();
                                         use async_std::stream::StreamExt;
-                                        let stream_arc = stream_arc.clone();
+                                        let shutdown = shutdown.clone();
 
-                                        // find_map is not a loop, it will return first result
-                                        receiver.find_map(move |event| {
-                                            let event = event.clone();
+                                        if let Some(reply) = receiver.find_map(move |event| {
+                                            //  let event = event.clone();
                                             let event: &CentralEvent = &event.lock().unwrap();
 
                                             match event {
                                                 CentralEvent::PeripheralConnected { peripheral } => {
                                                     if peripheral.id() == matched_id {
                                                         info!("peripheral connected! {}", peripheral.id());
-                                                        //drop(stream_ref);
-                                                        return Some(());
+                                                        return Some(Reply {
+                                                            message: peripheral.id().to_string(),
+                                                            origin: id.clone(),
+                                                        });
                                                     }
                                                 }
                                                 CentralEvent::PeripheralConnectFailed { peripheral, error } => {
                                                     if peripheral.id() == matched_id {
                                                         warn!("failed to connect to peripheral {}", peripheral.id());
-                                                        //cl.connect(&peripheral); // retry
+                                                        // we may want to retry connection
+                                                        return Some(Reply {
+                                                            message: "failed".to_string(),
+                                                            origin: id.clone(),
+                                                        });
                                                     }
                                                 }
                                                 _ => {}
                                             }
 
-                                            //drop(stream_ref);
                                             None
-                                        }).await
+                                        }).await {
+                                            peer.send(reply).await.unwrap();
+                                        }
                                     });
 
                                     let mut central = central.lock().unwrap();
                                     central.connect(&peripheral_info.peripheral);
                                     None
-                                    //handler.execute(HandlerCommand::ConnectToDevice(uuid, Box::new(|s| s)))
                                 })
                             // .map(|connected_uuid| connected_uuid.to_string())
                         }
                     } {
-                        info!("sending: {} to {}", message, id);
+                        info!("sending: {} to {}", message, peer_id);
                         peer.send(Reply {
                             message,
                             origin: id.clone(),
@@ -319,22 +327,14 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                 stream,
                 shutdown,
             } => {
-                info!("peer #{} connected", idx);
+                info!("peer #{} connected, {} connected peers", idx, peers.len());
                 match peers.entry(idx) {
                     Entry::Occupied(..) => (),
                     Entry::Vacant(entry) => {
                         let (client_sender, mut client_receiver) = mpsc::unbounded();
                         entry.insert(client_sender);
                         let mut disconnect_sender = disconnect_sender.clone();
-                        // spawning separate loop to send data to the peer
-                        // TODO(df): Prevent dropping stream if there are pending tasks (not only pending replies)
 
-                        // `shutdown` receiver will receive `None` once reader loop will finish.
-                        // On receiving `void` writer loop will quit. `disconnect_receiver` will send
-                        // pending messages from `client_receiver` stream, but pending tasks
-                        // won't be able to do much, except writing to stream directly.
-                        // Besides, they do not know if disconnection flag already received or not
-                        // (sending reply via as_reply or as_oneliner).
                         spawn_and_log_error(async move {
                             let res = peer_writer_loop(
                                 &mut client_receiver,
@@ -420,8 +420,8 @@ enum PeerEvent {
     },
     Command {
         id: String,
-        origin: u32,
-        stream: Arc<UnixStream>
+        peer_id: u32,
+        shutdown: Arc<Sender<Void>>,
     },
 }
 
