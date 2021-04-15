@@ -7,8 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use core_bluetooth::central::*;
+use postage::prelude::Sink;
 
-use blemacd::{handlers::*, Position, central_async::*};
+use blemacd::{handlers::*, Position};
 
 use async_std::{
     io::BufReader,
@@ -150,9 +151,22 @@ impl Reply {
 async fn broker_loop(events: Receiver<PeerEvent>) {
     let mut handler = InitHandler::new();
 
-    let mut central_async = CentralAsync::new();
-    let central = central_async.central.clone();
-    let mut receiver = central_async.receiver.clone().fuse();
+    let (mut sender, central_receiver) = postage::broadcast::channel(100);
+    let (central, mut cm_receiver) = CentralManager::new();
+
+    task::spawn(
+        async move {
+            loop {
+                while let Some(event) = cm_receiver.next().await {
+                    let event = Arc::new(Mutex::new(event));
+                    sender.send(event).await.unwrap();
+                }
+            }
+        });
+
+    let central = Arc::new(Mutex::new(central));
+
+    let mut receiver = central_receiver.clone().fuse();
 
     let (disconnect_sender, mut disconnect_receiver) =
         mpsc::unbounded::<(u32, Receiver<Reply>, Arc<UnixStream>)>();
@@ -229,7 +243,7 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                                     info!("'{}' matched to {}, connecting", id.clone(), matched_id);
 
                                     // let central = central.clone();
-                                    let mut receiver = central_async.receiver.clone();
+                                    let mut receiver = central_receiver.clone();
                                     let mut peer = peer.clone();
                                     let id = id.clone();
 
