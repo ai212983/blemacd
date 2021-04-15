@@ -120,7 +120,7 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
     broker
         .send(PeerEvent::NewPeer {
             idx,
-            stream: Arc::clone(&stream),
+            stream: stream.clone(),
             shutdown: shutdown_receiver,
         })
         .await
@@ -131,6 +131,7 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
             .send(PeerEvent::Command {
                 id: line?,
                 origin: idx,
+                stream: stream.clone()
             })
             .await
             .unwrap();
@@ -198,6 +199,7 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                 None => break,
                 Some(event) => {
                     let central = central.lock().unwrap();
+                    let event = event.clone();
                     handler.handle_event(&event.lock().unwrap(), &central);
                     continue;
                 }
@@ -215,7 +217,7 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                     AsyncWriteExt::write_all(&mut stream, reply.as_oneliner().as_bytes())
                         .await.ok();
                 }
-                info!("peer #{} disconnected, currently connected peers: {}", idx, peers.len());
+                info!("peer #{} disconnection pending, currently connected peers: {}", idx, peers.len());
                 continue;
             }
         };
@@ -229,14 +231,14 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
             // Other commands requires time to be processed, like connect to peripheral,
             // discover service, read from characteristic. They shouldn't block execution thread,
             // so new task::spawn will be created.
-            PeerEvent::Command { id, origin } => {
+            PeerEvent::Command { id, origin, stream } => {
                 if let Some(peer) = peers.get_mut(&origin) {
                     if let Some(message) = match id.clone().as_str() {
                         "status" => { // TODO(df): Move handler.execute out, return Option<Command>
                             Some(handler.execute(HandlerCommand::GetStatus(Box::new(|uptime, devices| {
                                 let mut status = format!("uptime {}", humantime::format_duration(uptime));
-                                if let Some(devices) = devices {
-                                    status = status + &*format!(", {} devices detected", devices);
+                                if let Some((all, connected)) = devices {
+                                    status = status + &*format!(", {} devices detected, {} connected", all, connected);
                                 }
                                 status
                             }))))
@@ -254,9 +256,11 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                             }))))
                         }
                         _ => {
+                            let stream_arc = stream.clone();
                             handler.execute(HandlerCommand::FindDevice(id.clone(), Box::new(|s| s)))
                                 .map_or(None, |peripheral_info| {
-                                    info!("we got match, trying to connect");
+                                    let matched_id = peripheral_info.peripheral.id();
+                                    info!("'{}' matched to {}, connecting", id.clone(), matched_id);
 
                                     // let central = central.clone();
                                     let mut receiver = central_async.receiver.clone();
@@ -264,22 +268,31 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                                     task::spawn(async move {
                                         //let central = central.lock().unwrap();
                                         use async_std::stream::StreamExt;
+                                        let stream_arc = stream_arc.clone();
 
+                                        // find_map is not a loop, it will return first result
                                         receiver.find_map(move |event| {
+                                            let event = event.clone();
                                             let event: &CentralEvent = &event.lock().unwrap();
+
                                             match event {
                                                 CentralEvent::PeripheralConnected { peripheral } => {
-                                                    info!("peripheral connected! ");
-                                                    return Some(());
+                                                    if peripheral.id() == matched_id {
+                                                        info!("peripheral connected! {}", peripheral.id());
+                                                        //drop(stream_ref);
+                                                        return Some(());
+                                                    }
                                                 }
-
                                                 CentralEvent::PeripheralConnectFailed { peripheral, error } => {
-                                                    warn!("failed to connect to peripheral {}", peripheral.id());
-                                                    //cl.connect(&peripheral); // retry
+                                                    if peripheral.id() == matched_id {
+                                                        warn!("failed to connect to peripheral {}", peripheral.id());
+                                                        //cl.connect(&peripheral); // retry
+                                                    }
                                                 }
                                                 _ => {}
                                             }
 
+                                            //drop(stream_ref);
                                             None
                                         }).await
                                     });
@@ -407,6 +420,7 @@ enum PeerEvent {
     Command {
         id: String,
         origin: u32,
+        stream: Arc<UnixStream>
     },
 }
 

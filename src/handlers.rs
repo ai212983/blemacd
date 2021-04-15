@@ -51,9 +51,8 @@ impl fmt::Display for PeripheralInfo {
 
 pub enum HandlerCommand<T> {
     ListDevices(Box<dyn FnOnce(&HashMap<Uuid, PeripheralInfo>) -> T + Send + 'static>),
-    GetStatus(Box<dyn FnOnce(Duration, Option<usize>) -> T + Send + 'static>),
+    GetStatus(Box<dyn FnOnce(Duration, Option<(usize, usize)>) -> T + Send + 'static>),
     FindDevice(String, Box<dyn FnOnce(Option<PeripheralInfo>) -> T + Send + 'static>),
-    ConnectToDevice(Uuid, Box<dyn FnOnce(Option<Uuid>) -> T + Send + 'static>),
 }
 
 impl<T> HandlerCommand<T> {
@@ -63,7 +62,6 @@ impl<T> HandlerCommand<T> {
             ListDevices(_) => "ListDevices",
             GetStatus(_) => "GetStatus",
             FindDevice(_, _) => "FindMatch",
-            ConnectToDevice(_, _) => "ConnectToDevice",
         }
     }
 }
@@ -91,7 +89,7 @@ impl InitHandler<'_>
                 callback(
                     Duration::new(self.started_at.elapsed().as_secs(), 0),
                     if let Some(handler) = &self.next {
-                        Some(handler.peripherals.len())
+                        Some((handler.peripherals.len(), handler.connected_peripherals.len()))
                     } else {
                         None
                     },
@@ -181,10 +179,6 @@ impl RootHandler<'_> {
                         result
                     })
             },
-            HandlerCommand::ConnectToDevice(uuid, callback) => {
-                // TODO(df): Add async here?
-                callback(Some(uuid))
-            }
             _ => {
                 //   if let Some(&mut handler) = self.next {
                 //       handler.execute(command);
@@ -202,7 +196,7 @@ impl RootHandler<'_> {
                 advertisement_data,
                 rssi: _,
             } => {
-                println!("[PeripheralDiscovered]: {}", self.peripherals.len());
+                debug!("[PeripheralDiscovered]: {}", self.peripherals.len());
                 self.peripherals.insert(
                     peripheral.id(),
                     PeripheralInfo {
@@ -210,14 +204,6 @@ impl RootHandler<'_> {
                         advertisement_data: advertisement_data.clone(),
                     },
                 );
-
-                /* if advertisement_data.is_connectable() != Some(false) &&
-                    self.connected_peripherals.insert(peripheral.clone())
-                {
-                    info!("connecting to {} {} dB ({:?})",
-                          peripheral.id(), rssi, advertisement_data.local_name());
-                    self.central.connect(&peripheral);
-                }*/
             }
 
             CentralEvent::GetPeripheralsResult {
@@ -225,7 +211,7 @@ impl RootHandler<'_> {
                 tag: _,
             } => {
                 for peripheral in peripherals {
-                    println!("[GetPeripheralsResult]: {}", peripheral.id());
+                    debug!("[GetPeripheralsResult]: {}", peripheral.id());
 
                     //  if let Some(d) = data.get(&TypeId::of::<ConnectionHandler>()).unwrap().downcast_ref::<RefCell<ConnectionHandler>>() {
                     //     println!("entry found: {:#?}", d.deref().borrow().connection_state);
@@ -242,6 +228,8 @@ impl RootHandler<'_> {
                 }
             }
             CentralEvent::PeripheralConnected { peripheral } => {
+                self.connected_peripherals.insert(peripheral.clone());
+                info!("registered peripheral {}, total {}", peripheral.id(), self.connected_peripherals.len());
                 peripheral.discover_services_with_uuids(&[SERVICE.parse().unwrap()]);
             }
             CentralEvent::PeripheralDisconnected {
@@ -249,14 +237,14 @@ impl RootHandler<'_> {
                 error: _,
             } => {
                 self.connected_peripherals.remove(&peripheral);
-                //println!("re-connecting to {})", peripheral.id());
-                central.connect(&peripheral);
+                info!("unregistered peripheral {}, total {}", peripheral.id(), self.connected_peripherals.len());
+                //central.connect(&peripheral);
             }
             CentralEvent::GetPeripheralsWithServicesResult {
                 peripherals,
                 tag: _,
             } => {
-                println!("[GetPeripheralsWithServicesResult]: {}", peripherals.len());
+                debug!("[GetPeripheralsWithServicesResult]: {}", peripherals.len());
                 for peripheral in peripherals {
                     //println!("Discovered with result: {}", peripheral.id());
                     /*    if self.connected_peripherals.insert(p.clone()) {

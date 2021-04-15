@@ -3,13 +3,14 @@ use std::sync::{Arc, Mutex};
 use async_std::{task, task::JoinHandle};
 use core_bluetooth::central::{CentralEvent, CentralManager};
 use futures::StreamExt;
+use postage::prelude::Sink;
 
 // ---------------------------
 
 
 pub struct CentralAsync {
     pub central: Arc<Mutex<CentralManager>>,
-    pub receiver: async_channel::Receiver<Arc<Mutex<CentralEvent>>>,
+    pub receiver: postage::broadcast::Receiver<Arc<Mutex<CentralEvent>>>,
     handle: JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>>,
 }
 
@@ -27,7 +28,7 @@ impl<'a> CentralAsync {
         // it is possible to use Arc<Mutex<_>> instead of cloneable receiver
         // https://users.rust-lang.org/t/multiple-receiver-mpsc-channel-using-arc-mutex-receiver/37798
 
-        let (sender, receiver) = async_channel::unbounded();
+        let (mut sender, receiver) = postage::broadcast::channel(100);
         let (central, mut central_receiver) = CentralManager::new();
 
         Self {
