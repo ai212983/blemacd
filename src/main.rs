@@ -76,40 +76,6 @@ async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     Ok(())
 }
 
-async fn socket_connection_loop<P: AsRef<Path>>(path: P) -> Result<()> {
-    let mut central_async = CentralAsync::new();
-    task::block_on(
-        async move {
-            let state = central_async.wait(|event, central| {
-                info!("--- {:?}", event);
-                if let CentralEvent::ManagerStateChanged { new_state } = event {
-                    match new_state {
-                        ManagerState::Unsupported => {
-                            eprintln!("Bluetooth is not supported on this system");
-                        }
-                        ManagerState::Unauthorized => {
-                            eprintln!("The app is not authorized to use Bluetooth on this system");
-                        }
-                        ManagerState::PoweredOff => {
-                            eprintln!("Bluetooth is disabled, please enable it");
-                        }
-                        ManagerState::PoweredOn => {
-                            info!("bt is powered on, starting peripherals scan");
-                            central.scan();
-                        }
-                        _ => {}
-                    }
-
-                    return Some(*new_state);
-                }
-                None
-            }).await;
-
-            info!("State received: {:?}", state);
-        });
-    Ok(())
-}
-
 async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx: u32) -> Result<()> {
     let stream = Arc::new(stream);
     let reader = BufReader::new(&*stream);
@@ -309,7 +275,6 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                                     central.connect(&peripheral_info.peripheral);
                                     None
                                 })
-                            // .map(|connected_uuid| connected_uuid.to_string())
                         }
                     } {
                         info!("sending: {} to {}", message, peer_id);
@@ -452,73 +417,10 @@ pub fn main() {
 
     cleanup_socket();
 
-    /*        task::block_on(socket_connection_loop(SOCKET_PATH))
-                .map_err(|err| eprintln!("{:?}", err))
-                .ok();
-    */
-
     task::block_on(streams_accept_loop(SOCKET_PATH))
         .map_err(|err| eprintln!("{:?}", err))
         .ok();
 
-    /*
-     let mut app = App::new();
-     task::block_on(async move {
-         app.connect().await;
-     });
-     */
-
     cleanup_socket();
     info!("exiting application");
-
-    /*
-     let (central, receiver) = CentralManager::new();
-
-    // https://rust-lang.github.io/async-book/06_multiple_futures/03_select.html
-
-     let central = Arc::new(Mutex::new(central));
-     let receiver = Arc::new(Mutex::new(receiver));
-
-     let listener = UnixListener::bind(SOCKET_PATH).await?;
-     info!("socket initialized");
-
-     let mut incoming = listener.incoming();
-     while let Some(stream) = incoming.next().await {
-         let mut stream = stream?;
-
-
-         // https://book.async.rs/tutorial/handling_disconnection.html#final-code
-
-         info!("incoming stream?");
-         match stream {
-             Ok(stream) => {
-                 if Arc::strong_count(&central) > 1 {
-                     let mut writer = BufWriter::new(&stream);
-                     writer.write_all(format!("just one connection please").as_bytes());
-                     writer.flush();
-                     stream.shutdown(Shutdown::Both);
-                 } else {
-                     info!("client connected");
-                     // let (tx, rx) = mpsc::channel();
-                     let central = Arc::clone(&central);
-                     let receiver = Arc::clone(&receiver);
-                     thread::spawn(move || {
-                         let mut central = central.lock().unwrap();
-                         let mut receiver = receiver.lock().unwrap();
-                         handle_client(central.deref(), receiver.deref(), stream);
-                         //let val = String::from("hi");
-                         //tx.send(val).unwrap();
-                         info!("client disconnected");
-                     });
-                     // let received = rx.recv().unwrap();
-                     // println!("Got: {}", received);
-                 }
-             }
-             Err(err) => {
-                 println!("Error: {:?}", err);
-                 break;
-             }
-         }
-
-    } */
 }
