@@ -147,24 +147,26 @@ impl Reply {
     }
 }
 
+
+fn wrap_central() -> (JoinHandle<()>, Arc<Mutex<CentralManager>>, postage::broadcast::Receiver<Arc<Mutex<CentralEvent>>>) {
+    let (mut sender, receiver) = postage::broadcast::channel(100);
+    let (central, mut central_receiver) = CentralManager::new();
+
+    (task::spawn(
+        async move {
+            while let Some(event) = central_receiver.next().await {
+                let event = Arc::new(Mutex::new(event));
+                sender.send(event).await.unwrap();
+            }
+        }),
+     Arc::new(Mutex::new(central)), receiver)
+}
+
 // Base logic taken from https://book.async.rs/tutorial/handling_disconnection.html#final-code
 async fn broker_loop(events: Receiver<PeerEvent>) {
     let mut handler = InitHandler::new();
 
-    let (mut sender, central_receiver) = postage::broadcast::channel(100);
-    let (central, mut cm_receiver) = CentralManager::new();
-
-    task::spawn(
-        async move {
-            loop {
-                while let Some(event) = cm_receiver.next().await {
-                    let event = Arc::new(Mutex::new(event));
-                    sender.send(event).await.unwrap();
-                }
-            }
-        });
-
-    let central = Arc::new(Mutex::new(central));
+    let (_, central, central_receiver) = wrap_central();
 
     let mut receiver = central_receiver.clone().fuse();
 
