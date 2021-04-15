@@ -92,7 +92,6 @@ async fn socket_connection_loop<P: AsRef<Path>>(path: P) -> Result<()> {
                         }
                         ManagerState::PoweredOff => {
                             eprintln!("Bluetooth is disabled, please enable it");
-                            // TODO(df): Clean up handlers
                         }
                         ManagerState::PoweredOn => {
                             info!("bt is powered on, starting peripherals scan");
@@ -213,7 +212,7 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                 assert!(peers.remove(&idx).is_some());
 
                 let mut stream = &*stream;
-                while let Ok(Some(reply)) = pending_replies.try_next() { // TODO(df): Prevent dropping stream if there are pending tasks (not only pending replies)
+                while let Ok(Some(reply)) = pending_replies.try_next() {
                     AsyncWriteExt::write_all(&mut stream, reply.as_oneliner().as_bytes())
                         .await.ok();
                 }
@@ -234,7 +233,7 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
             PeerEvent::Command { id, origin, stream } => {
                 if let Some(peer) = peers.get_mut(&origin) {
                     if let Some(message) = match id.clone().as_str() {
-                        "status" => { // TODO(df): Move handler.execute out, return Option<Command>
+                        "status" => { // TODO(df): Move handler.execute out? (return Option<Command>)
                             Some(handler.execute(HandlerCommand::GetStatus(Box::new(|uptime, devices| {
                                 let mut status = format!("uptime {}", humantime::format_duration(uptime));
                                 if let Some((all, connected)) = devices {
@@ -297,10 +296,6 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                                         }).await
                                     });
 
-
-                                    // TODO(df): central_async connection to peripheral != handler connection to peripheral
-                                    // there's should be only one entry point (no HandlerCommand::ConnectToDevice?)
-
                                     let mut central = central.lock().unwrap();
                                     central.connect(&peripheral_info.peripheral);
                                     None
@@ -331,7 +326,15 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                         let (client_sender, mut client_receiver) = mpsc::unbounded();
                         entry.insert(client_sender);
                         let mut disconnect_sender = disconnect_sender.clone();
-                        // spawning separate thread to send data to peers
+                        // spawning separate loop to send data to the peer
+                        // TODO(df): Prevent dropping stream if there are pending tasks (not only pending replies)
+
+                        // `shutdown` receiver will receive `None` once reader loop will finish.
+                        // On receiving `void` writer loop will quit. `disconnect_receiver` will send
+                        // pending messages from `client_receiver` stream, but pending tasks
+                        // won't be able to do much, except writing to stream directly.
+                        // Besides, they do not know if disconnection flag already received or not
+                        // (sending reply via as_reply or as_oneliner).
                         spawn_and_log_error(async move {
                             let res = peer_writer_loop(
                                 &mut client_receiver,
@@ -346,8 +349,6 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
 
                             // passing Arc<Stream> will prevent dropping stream once we're out of current scope
 
-                            // TODO(df): We need to pass Arc<Stream> to async connection tasks too
-                            // to avoid disconnection when there are no replies yet
                             disconnect_sender
                                 .send((idx, client_receiver, stream.clone()))
                                 .await
