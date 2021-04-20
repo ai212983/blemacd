@@ -72,7 +72,7 @@ impl InitHandler<'_>
         }
     }
 
-    pub fn get_status(&mut self) -> (Duration, Option<(usize, usize)>) {
+    pub fn get_status(&self) -> (Duration, Option<(usize, usize)>) {
         (
             Duration::new(self.started_at.elapsed().as_secs(), 0),
             if let Some(handler) = &self.next {
@@ -83,11 +83,28 @@ impl InitHandler<'_>
         )
     }
 
-    pub fn list_devices(&mut self) -> &HashMap<Uuid, PeripheralInfo> {
-        if let Some(handler) = &mut self.next {
+    pub fn list_devices(&self) -> &HashMap<Uuid, PeripheralInfo> {
+        if let Some(handler) = &self.next {
             &handler.peripherals
         } else {
             panic!("Can't list devices");
+        }
+    }
+
+    pub fn find_device(&self, uuid_substr: String) -> Option<PeripheralInfo> {
+        if let Some(handler) = &self.next {
+            handler.find_device(uuid_substr)
+        } else {
+            panic!("Can't find device");
+        }
+    }
+
+    pub async fn connect_to_device(&self, uuid: Uuid) -> Result<Peripheral, String> {
+        if let Some(handler) = &self.next {
+            info!("invoking connect_to_device '{:?}'", uuid);
+            handler.connect_to_device(uuid).await
+        } else {
+            panic!("Can't find device");
         }
     }
 
@@ -109,15 +126,16 @@ impl InitHandler<'_>
                 }
                 ManagerState::PoweredOn => {
                     info!("bt is powered on, starting peripherals scan");
+                    central.scan();
+                    self.next = Some(RootHandler::new());
+
+                    //TODO(df): Run different type of peripherals search depending on params
+
                     // match &self.peripheral_uuid {
                     //    Some(uuid) => central.get_peripherals(&[uuid.parse().unwrap()]),
                     //    None => central.scan(),
                     //}
-
-                    //TODO(df): Run different type of peripherals search depending on params
                     //central.get_peripherals_with_services(&[SERVICE.parse().unwrap()]) // TODO(df): Implement connection by service uuid
-                    central.scan();
-                    self.next = Some(RootHandler::new());
                 }
                 _ => {}
             }
@@ -148,6 +166,68 @@ impl RootHandler<'_> {
             next: None,
         }
     }
+
+    fn find_device(&self, uuid_substr: String) -> Option<PeripheralInfo> {
+        let s = uuid_substr.as_str();
+        for (uuid, peripheral) in &self.peripherals {
+            let uuid_string = uuid.to_string();
+            if uuid_string.contains(s) {
+                return Some(peripheral.clone());
+            }
+        }
+        None
+    }
+
+    async fn connect_to_device(&self, uuid: Uuid) -> Result<Peripheral, String> {
+        info!("looking for connected_peripherals");
+        for peripheral in &self.connected_peripherals {
+            if peripheral.id() == uuid {
+                return Ok(peripheral.clone());
+            }
+        }
+
+        // there are two ways of implementing this:
+        // 1) store required uuids with associated futures in some map,
+        //    check this map on every `handle_event`,
+        //    complete futures if there's match
+        // 2) async closure
+        let mut receiver = &mut self.receiver.clone();
+        let id = uuid.clone();
+
+        use async_std::stream::StreamExt;
+
+        info!("starting find_map");
+        let fut = receiver.find_map(move |event| {
+            info!("processing event {:?}", event);
+
+            match &*event.lock().unwrap() {
+                CentralEvent::PeripheralConnected { peripheral } => {
+                    if peripheral.id() == id {
+                        info!("peripheral connected! {}", peripheral.id());
+                        return Some(Ok(peripheral.clone()));
+                    }
+                }
+                CentralEvent::PeripheralConnectFailed { peripheral, error } => {
+                    if peripheral.id() == id {
+                        warn!("failed to connect to peripheral {}", peripheral.id());
+                        // we may want to retry connection
+                        // TODO(df): Output error
+                        return Some(Err("error".to_string()));
+                    }
+                }
+                _ => {}
+            }
+
+            None
+        }).await;
+
+        return if let Some(res) = fut {
+            res
+        } else {
+            Err("cant find".to_string())
+        }
+    }
+
     /*
         fn execute<T>(&mut self, command: HandlerCommand) -> T {
             match command {
@@ -229,7 +309,9 @@ impl RootHandler<'_> {
             }
         }
     */
+
     fn handle_event(&mut self, event: Arc<Mutex<CentralEvent>>, central: &CentralManager) {
+        info!("handling_event, {:?}", event.lock().unwrap());
         match &*event.lock().unwrap() {
             CentralEvent::PeripheralDiscovered {
                 peripheral,
@@ -237,6 +319,7 @@ impl RootHandler<'_> {
                 rssi: _,
             } => {
                 debug!("[PeripheralDiscovered]: {}", self.peripherals.len());
+                info!("[PeripheralDiscovered]: {}", self.peripherals.len());
                 self.peripherals.insert(
                     peripheral.id(),
                     PeripheralInfo {
@@ -252,15 +335,6 @@ impl RootHandler<'_> {
             } => {
                 for peripheral in peripherals {
                     debug!("[GetPeripheralsResult]: {}", peripheral.id());
-
-                    //  if let Some(d) = data.get(&TypeId::of::<ConnectionHandler>()).unwrap().downcast_ref::<RefCell<ConnectionHandler>>() {
-                    //     println!("entry found: {:#?}", d.deref().borrow().connection_state);
-                    // }
-                    /* let _: &ConnectionHandler = match data.get("connection").deref().borrow().downcast_ref::<ConnectionHandler>() {
-                                             Some(b) => b,
-                                             None => panic!("isn't a ConnectionHandler!")
-                                         };
-                    */
                     if self.connected_peripherals.insert(peripheral.clone()) {
                         //println!("connecting to {})", peripheral.id());
                         central.connect(&peripheral);

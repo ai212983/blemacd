@@ -37,6 +37,7 @@ use core_bluetooth::error::Error;
 use std::collections::HashSet;
 use async_std::task::{Waker, JoinHandle};
 use core_bluetooth::ManagerState;
+use std::borrow::Borrow;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 type Sender<T> = mpsc::UnboundedSender<T>;
@@ -108,19 +109,64 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
 }
 
 async fn peer_writer_loop(
-    messages: &mut Receiver<Reply>,
+    handler: Arc<Mutex<InitHandler<'_>>>,
+    messages: &mut Receiver<String>,
     stream: Arc<UnixStream>,
     shutdown: Receiver<Void>) -> Result<()> {
     let mut stream = &*stream;
     let mut events = FusedStream::new(Box::pin(messages), Box::pin(shutdown.fuse()));
 
     while let Some(event) = events.next().await {
-        // this is SOMETIMES triggered with one liners
+
         if let Some(r) = &event.reply {
-            let s = if event.shutdown {
-                r.as_oneliner()
+            let r = if let Some(reply) = match r.as_str() {
+                "status" => { // TODO(df): Move handler.execute out? (return Option<Command>)
+                    info!("incoming status command");
+                    let handler = &*handler.lock().unwrap();
+                    let (uptime, devices) = handler.get_status();
+                    let mut status = format!("uptime {}", humantime::format_duration(uptime));
+                    if let Some((all, connected)) = devices {
+                        status = status + &*format!(", {} devices detected, {} connected", all, connected);
+                    }
+                    Some(status)
+                }
+                "all" => {
+                    let handler = &*handler.lock().unwrap();
+                    let devices = handler.list_devices().values()
+                        .map(|p| p.to_string())
+                        .collect::<Vec<String>>();
+                    Some(format!(
+                        "{} devices total\n{}",
+                        devices.len(),
+                        devices.join("\n")
+                    ))
+                }
+                _ => {
+                    if let Some(peripheral_info) = {
+                        let handler = &*handler.lock().unwrap();
+                        handler.find_device(r.clone())
+                    } {
+                        let matched_id = peripheral_info.peripheral.id();
+                        Some(format!("'{}' matched to {}, connecting (not really)", r.clone(), matched_id))
+
+                        // let handler = &*handler.lock().unwrap();
+                        // if let Ok(peripheral) = handler.connect_to_device(matched_id).await {
+                        //    info!("connected to peripheral {:?}", peripheral);
+                        // }
+                    } else {
+                        None
+                    }
+                }
+            } {
+                reply
             } else {
-                r.as_reply()
+                "oops, nothing".to_string()
+            };
+
+            let s = if event.shutdown {
+                r.to_owned() + ", bye!"
+            } else {
+                r.to_owned() + ", but wait"
             };
             AsyncWriteExt::write_all(&mut stream, s.as_bytes()).await?;
         }
@@ -164,15 +210,15 @@ fn wrap_central() -> (JoinHandle<()>, CentralManager, postage::broadcast::Receiv
 
 // Base logic taken from https://book.async.rs/tutorial/handling_disconnection.html#final-code
 async fn broker_loop(events: Receiver<PeerEvent>) {
-    let mut handler = InitHandler::new();
+    let handler = Arc::new(Mutex::new(InitHandler::new()));
 
     let (_, central, central_receiver) = wrap_central();
 
     let mut receiver = central_receiver.clone().fuse();
 
     let (disconnect_sender, mut disconnect_receiver) =
-        mpsc::unbounded::<(u32, Receiver<Reply>, Arc<UnixStream>)>();
-    let mut peers: HashMap<u32, Sender<Reply>> = HashMap::new();
+        mpsc::unbounded::<(u32, Receiver<String>, Arc<UnixStream>)>();
+    let mut peers: HashMap<u32, Sender<String>> = HashMap::new();
     let mut events = events.fuse();
 
     loop {
@@ -180,6 +226,7 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
             central_event = receiver.next() => match central_event {
                 None => break,
                 Some(event) => {
+                    let handler = &mut *handler.lock().unwrap();
                     handler.handle_event(event.clone(), &central);
                     continue;
                 }
@@ -194,7 +241,7 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
 
                 let mut stream = &*stream;
                 while let Ok(Some(reply)) = pending_replies.try_next() {
-                    AsyncWriteExt::write_all(&mut stream, reply.as_oneliner().as_bytes())
+                    AsyncWriteExt::write_all(&mut stream, reply.as_bytes())
                         .await.ok();
                 }
                 info!("peer #{} disconnected, currently connected peers: {}", idx, peers.len());
@@ -202,6 +249,8 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
             }
         };
 
+
+        //TODO(df): peer_event should be dispatched and processed in its own thread
         match peer_event {
 
             // When processing commands, broker_loop job is to execute command and return Reply
@@ -213,91 +262,80 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
             // so new task::spawn will be created.
             PeerEvent::Command { id, peer_id, shutdown } => {
                 if let Some(peer) = peers.get_mut(&peer_id) {
-                    if let Some(message) = match id.clone().as_str() {
-                        "status" => { // TODO(df): Move handler.execute out? (return Option<Command>)
-                            info!("incoming status command");
-                            let (uptime, devices) = handler.get_status();
-                            let mut status = format!(" uptime {}", humantime::format_duration(uptime));
-                            if let Some((all, connected)) = devices {
-                                status = status + &*format!(", {} devices detected, {} connected", all, connected);
-                            }
-                            Some(status)
-                        }
-                        "all" => {
-                            let devices = handler.list_devices().values()
-                                .map(|p| p.to_string())
-                                .collect::<Vec<String>>();
-                            Some(format!(
-                                "{} devices total\n{}",
-                                devices.len(),
-                                devices.join("\n")
-                            ))
-                        }
-                        _ => {
+                    info!("sending: '{}' to {}", id, peer_id);
+                    peer.send(id.clone()).await.unwrap(); //TODO(df): Do we have to unwrap?
+                    /*
+                if let Some(message) = match id.clone().as_str() {
+                    _ => {
+                        if let Some(peripheral_info) = {
+                            let handler = &*handler.lock().unwrap();
+                            handler.find_device(id.clone())
+                        } {
+                            let matched_id = peripheral_info.peripheral.id();
+                            info!("'{}' matched to {}, connecting", id.clone(), matched_id);
+
+                           // let handler = &*handler.lock().unwrap();
+                           // if let Ok(peripheral) = handler.connect_to_device(matched_id).await {
+                           //    info!("connected to peripheral {:?}", peripheral);
+                           // }
                             None
-                            /*
-                            let shutdown = shutdown.clone();
-                            // TODO(df): Async GetDevice command in handler.
-                            handler.execute(HandlerCommand::FindDevice(id.clone(), Box::new(|s| s)))
-                                .map_or(None, |peripheral_info| {
-                                    let matched_id = peripheral_info.peripheral.id();
-                                    info!("'{}' matched to {}, connecting", id.clone(), matched_id);
-
-                                    let mut receiver = central_receiver.clone();
-                                    let mut peer = peer.clone();
-                                    let id = id.clone();
-
-                                    task::spawn(async move {
-                                        use async_std::stream::StreamExt;
-                                        let shutdown = shutdown.clone();
-
-                                        if let Some(reply) = receiver.find_map(move |event| {
-                                            let event: &CentralEvent = &event.lock().unwrap();
-
-                                            match event {
-                                                CentralEvent::PeripheralConnected { peripheral } => {
-                                                    if peripheral.id() == matched_id {
-                                                        info!("peripheral connected! {}", peripheral.id());
-                                                        return Some(Reply {
-                                                            message: peripheral.id().to_string(),
-                                                            origin: id.clone(),
-                                                        });
-                                                    }
-                                                }
-                                                CentralEvent::PeripheralConnectFailed { peripheral, error } => {
-                                                    if peripheral.id() == matched_id {
-                                                        warn!("failed to connect to peripheral {}", peripheral.id());
-                                                        // we may want to retry connection
-                                                        return Some(Reply {
-                                                            message: "failed".to_string(),
-                                                            origin: id.clone(),
-                                                        });
-                                                    }
-                                                }
-                                                _ => {}
-                                            }
-
-                                            None
-                                        }).await {
-                                            peer.send(reply).await.unwrap();
-                                        }
-                                    });
-
-                                    let mut central = central.lock().unwrap();
-                                    central.connect(&peripheral_info.peripheral);
-                                    None
-                                })
-                            */
+                        } else {
+                            None
                         }
-                    } {
-                        info!("sending: '{}' to {}", message, peer_id);
-                        peer.send(Reply {
-                            message,
-                            origin: id.clone(),
+*/
+                    /*
+                    let shutdown = shutdown.clone();
+                    // TODO(df): Async GetDevice command in handler.
+                    handler.execute(HandlerCommand::FindDevice(id.clone(), Box::new(|s| s)))
+                        .map_or(None, |peripheral_info| {
+                            let matched_id = peripheral_info.peripheral.id();
+                            info!("'{}' matched to {}, connecting", id.clone(), matched_id);
+
+                            let mut receiver = central_receiver.clone();
+                            let mut peer = peer.clone();
+                            let id = id.clone();
+
+                            task::spawn(async move {
+                                use async_std::stream::StreamExt;
+                                let shutdown = shutdown.clone();
+
+                                if let Some(reply) = receiver.find_map(move |event| {
+                                    let event: &CentralEvent = &event.lock().unwrap();
+
+                                    match event {
+                                        CentralEvent::PeripheralConnected { peripheral } => {
+                                            if peripheral.id() == matched_id {
+                                                info!("peripheral connected! {}", peripheral.id());
+                                                return Some(Reply {
+                                                    message: peripheral.id().to_string(),
+                                                    origin: id.clone(),
+                                                });
+                                            }
+                                        }
+                                        CentralEvent::PeripheralConnectFailed { peripheral, error } => {
+                                            if peripheral.id() == matched_id {
+                                                warn!("failed to connect to peripheral {}", peripheral.id());
+                                                // we may want to retry connection
+                                                return Some(Reply {
+                                                    message: "failed".to_string(),
+                                                    origin: id.clone(),
+                                                });
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+
+                                    None
+                                }).await {
+                                    peer.send(reply).await.unwrap();
+                                }
+                            });
+
+                            let mut central = central.lock().unwrap();
+                            central.connect(&peripheral_info.peripheral);
+                            None
                         })
-                            .await
-                            .unwrap()
-                    }
+                    */
                 }
             }
             PeerEvent::NewPeer {
@@ -313,8 +351,10 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                         entry.insert(client_sender);
                         let mut disconnect_sender = disconnect_sender.clone();
 
+                        let handler = handler.clone();
                         spawn_and_log_error(async move {
                             let res = peer_writer_loop(
+                                handler,
                                 &mut client_receiver,
                                 stream.clone(),
                                 shutdown,
@@ -345,13 +385,13 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
 }
 
 struct FusedStream<'a> {
-    messages: Pin<Box<&'a mut Receiver<Reply>>>,
+    messages: Pin<Box<&'a mut Receiver<String>>>,
     shutdown: Pin<Box<Fuse<Receiver<Void>>>>,
 }
 
 impl<'a> FusedStream<'a> {
     fn new(
-        messages: Pin<Box<&'a mut Receiver<Reply>>>,
+        messages: Pin<Box<&'a mut Receiver<String>>>,
         shutdown: Pin<Box<Fuse<Receiver<Void>>>>,
     ) -> FusedStream {
         Self { messages, shutdown }
@@ -360,7 +400,7 @@ impl<'a> FusedStream<'a> {
 
 #[derive(Debug)]
 struct FusedEvent {
-    reply: Option<Reply>,
+    reply: Option<String>,
     shutdown: bool,
 }
 
