@@ -1,0 +1,5 @@
+// [Service UUID: Philips Lighting B.V. (0xfe0f)]
+// [UUID: 97fe656120014f6286e9b71ee2da3d22]  - write 01 to enable pairing requests
+
+// [Service UUID: Philips Lighting B.V. (0xfe0f)]
+// [UUID: 97fe656100034f6286e9b71ee2da3d22] - read to initiate pairing request
