@@ -13,6 +13,13 @@ use std::time::{Instant, Duration};
 use core_bluetooth::central::service::Service;
 use std::fmt::{Debug};
 
+use futures::future::{ok, err, Future};
+use std::sync::{Arc, Mutex};
+use postage::prelude::Sink;
+use std::marker::PhantomData;
+use std::ops::Deref;
+
+
 const PERIPHERAL: &str = "fe3c678b-ab90-42ea-97d8-d13047ffdaa4";
 // local hue lamp. THIS ID WILL BE DIFFERENT FOR ANOTHER DEVICE!
 const PAIRING_SERVICE: &str = "932c32bd-0000-47a2-835a-a8d455b859dd";
@@ -49,23 +56,6 @@ impl fmt::Display for PeripheralInfo {
     }
 }
 
-pub enum HandlerCommand<T> {
-    ListDevices(Box<dyn FnOnce(&HashMap<Uuid, PeripheralInfo>) -> T + Send + 'static>),
-    GetStatus(Box<dyn FnOnce(Duration, Option<(usize, usize)>) -> T + Send + 'static>),
-    FindDevice(String, Box<dyn FnOnce(Option<PeripheralInfo>) -> T + Send + 'static>),
-}
-
-impl<T> HandlerCommand<T> {
-    fn name(&self) -> &'static str {
-        use HandlerCommand::*;
-        match self {
-            ListDevices(_) => "ListDevices",
-            GetStatus(_) => "GetStatus",
-            FindDevice(_, _) => "FindMatch",
-        }
-    }
-}
-
 pub struct InitHandler<'a> {
     started_at: Instant,
     state: ManagerState,
@@ -82,32 +72,27 @@ impl InitHandler<'_>
         }
     }
 
-    /// execute boxed FnOnce stored in HandlerCommand and return execution result
-    pub fn execute<T>(&mut self, command: HandlerCommand<T>) -> T {
-        match command {
-            HandlerCommand::GetStatus(callback) => {
-                callback(
-                    Duration::new(self.started_at.elapsed().as_secs(), 0),
-                    if let Some(handler) = &self.next {
-                        Some((handler.peripherals.len(), handler.connected_peripherals.len()))
-                    } else {
-                        None
-                    },
-                )
+    pub fn get_status(&mut self) -> (Duration, Option<(usize, usize)>) {
+        (
+            Duration::new(self.started_at.elapsed().as_secs(), 0),
+            if let Some(handler) = &self.next {
+                Some((handler.peripherals.len(), handler.connected_peripherals.len()))
+            } else {
+                None
             }
-            _ => {
-                if let Some(handler) = &mut self.next {
-                    handler.execute(command)
-                } else {
-                    panic!("Can't execute command '{}'", command.name());
-                }
-            }
+        )
+    }
+
+    pub fn list_devices(&mut self) -> &HashMap<Uuid, PeripheralInfo> {
+        if let Some(handler) = &mut self.next {
+            &handler.peripherals
+        } else {
+            panic!("Can't list devices");
         }
     }
 
-    pub fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
-        if let CentralEvent::ManagerStateChanged { new_state } = event {
-            println!("New state event: {:?}", event);
+    pub fn handle_event(&mut self, event: Arc<Mutex<CentralEvent>>, central: &CentralManager) {
+        if let CentralEvent::ManagerStateChanged { new_state } = &*event.lock().unwrap() {
             self.state = *new_state;
             match new_state {
                 ManagerState::Unsupported => {
@@ -128,16 +113,18 @@ impl InitHandler<'_>
                     //    Some(uuid) => central.get_peripherals(&[uuid.parse().unwrap()]),
                     //    None => central.scan(),
                     //}
-                    central.scan();
-                    self.next = Some(RootHandler::new());
+
                     //TODO(df): Run different type of peripherals search depending on params
                     //central.get_peripherals_with_services(&[SERVICE.parse().unwrap()]) // TODO(df): Implement connection by service uuid
-                    //central.scan();
+                    central.scan();
+                    self.next = Some(RootHandler::new());
                 }
                 _ => {}
             }
-        } else if let Some(handler) = &mut self.next {
-            handler.handle_event(event, central);
+        };
+
+        if let Some(handler) = &mut self.next {
+            handler.handle_event(event.clone(), central);
         }
     }
 }
@@ -145,25 +132,26 @@ impl InitHandler<'_>
 struct RootHandler<'a> {
     connected_peripherals: HashSet<Peripheral>,
     peripherals: HashMap<Uuid, PeripheralInfo>,
+    sender: postage::broadcast::Sender<Arc<Mutex<CentralEvent>>>,
+    receiver: postage::broadcast::Receiver<Arc<Mutex<CentralEvent>>>,
     next: Option<DeviceHandler<'a>>,
 }
 
 impl RootHandler<'_> {
     fn new() -> Self {
+        let (sender, receiver) = postage::broadcast::channel(100);
         Self {
+            sender,
+            receiver,
             connected_peripherals: HashSet::new(),
             peripherals: HashMap::new(),
             next: None,
         }
     }
-
-    fn execute<T>(&mut self, command: HandlerCommand<T>) -> T {
-        match command {
-            HandlerCommand::ListDevices(callback) => {
-                callback(&self.peripherals)
-            }
-            HandlerCommand::FindDevice(substring, callback) => {
-                callback(
+    /*
+        fn execute<T>(&mut self, command: HandlerCommand) -> T {
+            match command {
+                HandlerCommand::FindDevice(substring) => {
                     if let Some(handler) = &mut self.next {
                         None // TODO(df): Add matching for next
                     } else {
@@ -177,20 +165,72 @@ impl RootHandler<'_> {
                             }
                         }
                         result
-                    })
-            },
-            _ => {
-                //   if let Some(&mut handler) = self.next {
-                //       handler.execute(command);
-                //   } else {
-                panic!("Can't execute command {}", command.name());
-                //   }
+                    }
+                }
+                HandlerCommand::ConnectToDevice(uuid) => {
+                    if let Some(handler) = &mut self.next {
+                        err("no handler".to_string())
+                    } else {
+                        for peripheral in &self.connected_peripherals {
+                            if peripheral.id() == uuid {
+                                return ok(peripheral.clone());
+                            }
+                        }
+
+                        // there are two ways of implementing this:
+                        // 1) store required uuids with associated futures in some map,
+                        //    check this map on every `handle_event`,
+                        //    complete futures if there's match
+                        // 2) async closure
+                        let mut receiver = &self.receiver.clone();
+                        let id = uuid.clone();
+
+                        let fut = async move {
+                            use async_std::stream::StreamExt;
+
+                            if let Some(reply) = receiver.find_map(move |event| {
+                                let event: &CentralEvent = &event.lock().unwrap();
+
+                                match event {
+                                    CentralEvent::PeripheralConnected { peripheral } => {
+                                        if peripheral.id() == id {
+                                            info!("peripheral connected! {}", peripheral.id());
+                                            return Some(Ok(peripheral.clone()));
+                                        }
+                                    }
+                                    CentralEvent::PeripheralConnectFailed { peripheral, error } => {
+                                        if peripheral.id() == id {
+                                            warn!("failed to connect to peripheral {}", peripheral.id());
+                                            // we may want to retry connection
+                                            return Some(Err(error.unwrap().to_string()));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+
+                                None
+                            }).await {
+                                reply
+                            } else {
+                                Err("can't find device".to_string())
+                            }
+                        };
+
+                        fut
+                    }
+                }
+                _ => {
+                    //   if let Some(&mut handler) = self.next {
+                    //       handler.execute(command);
+                    //   } else {
+                    panic!("Can't execute command {}", command.name());
+                    //   }
+                }
             }
         }
-    }
-
-    fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
-        match event {
+    */
+    fn handle_event(&mut self, event: Arc<Mutex<CentralEvent>>, central: &CentralManager) {
+        match &*event.lock().unwrap() {
             CentralEvent::PeripheralDiscovered {
                 peripheral,
                 advertisement_data,
@@ -256,6 +296,7 @@ impl RootHandler<'_> {
 
             _ => {}
         }
+        self.sender.send(event.clone());
     }
 }
 
@@ -270,10 +311,6 @@ impl<'a> DeviceHandler<'a> {
             peripheral,
             services: HashMap::new(),
         }
-    }
-
-    fn execute<T>(&self, command: HandlerCommand<T>) -> T {
-        panic!("Can't execute command {}", command.name());
     }
 
     fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
