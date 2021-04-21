@@ -16,7 +16,9 @@ use async_std::{
     os::unix::net::{UnixListener, UnixStream},
     path::Path,
     prelude::*,
+    sync::RwLock,
     task,
+    task::{Waker, JoinHandle},
 };
 use futures::{
     channel::mpsc, select, pin_mut, sink::SinkExt, stream::Fuse, AsyncBufReadExt, AsyncWriteExt,
@@ -35,7 +37,6 @@ use core_bluetooth::central::peripheral::Peripheral;
 use core_bluetooth::central::characteristic::{Characteristic, WriteKind};
 use core_bluetooth::error::Error;
 use std::collections::HashSet;
-use async_std::task::{Waker, JoinHandle};
 use core_bluetooth::ManagerState;
 use std::borrow::Borrow;
 
@@ -109,7 +110,7 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
 }
 
 async fn peer_writer_loop(
-    handler: Arc<Mutex<InitHandler<'_>>>,
+    handler: Arc<HandlerHandle<'_>>,
     messages: &mut Receiver<String>,
     stream: Arc<UnixStream>,
     shutdown: Receiver<Void>) -> Result<()> {
@@ -122,7 +123,6 @@ async fn peer_writer_loop(
             let r = if let Some(reply) = match r.as_str() {
                 "status" => { // TODO(df): Move handler.execute out? (return Option<Command>)
                     info!("incoming status command");
-                    let handler = &*handler.lock().unwrap();
                     let (uptime, devices) = handler.get_status();
                     let mut status = format!("uptime {}", humantime::format_duration(uptime));
                     if let Some((all, connected)) = devices {
@@ -131,7 +131,6 @@ async fn peer_writer_loop(
                     Some(status)
                 }
                 "all" => {
-                    let handler = &*handler.lock().unwrap();
                     let devices = handler.list_devices().values()
                         .map(|p| p.to_string())
                         .collect::<Vec<String>>();
@@ -143,16 +142,23 @@ async fn peer_writer_loop(
                 }
                 _ => {
                     if let Some(peripheral_info) = {
-                        let handler = &*handler.lock().unwrap();
                         handler.find_device(r.clone())
                     } {
                         let matched_id = peripheral_info.peripheral.id();
-                        Some(format!("'{}' matched to {}, connecting (not really)", r.clone(), matched_id))
+                        Some(format!("'{}' matched to {}, connecting (not really)", r.clone(), matched_id));
 
-                        // let handler = &*handler.lock().unwrap();
-                        // if let Ok(peripheral) = handler.connect_to_device(matched_id).await {
-                        //    info!("connected to peripheral {:?}", peripheral);
-                        // }
+                        // TODO(df): We are holding reference to the handler here.
+                        // It makes impossible to update handler with new event, so its a deadlock.
+                        // Solution would be to wrap handler inside Arc<Mutex<>> and expose the wrapper,
+                        // see https://users.rust-lang.org/t/mutable-struct-fields-with-async-await/45395/7
+
+                        /*
+                        if let Ok(peripheral) = handler.connect_to_device(matched_id).await {
+                            Some(format!("connected to peripheral {:?}", peripheral))
+                        } else {
+                            Some("error?".to_string())
+                        }*/
+                        None
                     } else {
                         None
                     }
@@ -210,7 +216,7 @@ fn wrap_central() -> (JoinHandle<()>, CentralManager, postage::broadcast::Receiv
 
 // Base logic taken from https://book.async.rs/tutorial/handling_disconnection.html#final-code
 async fn broker_loop(events: Receiver<PeerEvent>) {
-    let handler = Arc::new(Mutex::new(InitHandler::new()));
+    let handler = Arc::new(HandlerHandle::new());
 
     let (_, central, central_receiver) = wrap_central();
 
@@ -226,7 +232,6 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
             central_event = receiver.next() => match central_event {
                 None => break,
                 Some(event) => {
-                    let handler = &mut *handler.lock().unwrap();
                     handler.handle_event(event.clone(), &central);
                     continue;
                 }

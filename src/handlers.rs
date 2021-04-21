@@ -14,7 +14,7 @@ use core_bluetooth::central::service::Service;
 use std::fmt::{Debug};
 
 use futures::future::{ok, err, Future};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use postage::prelude::Sink;
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -56,7 +56,51 @@ impl fmt::Display for PeripheralInfo {
     }
 }
 
-pub struct InitHandler<'a> {
+pub struct HandlerHandle<'a>(Arc<RwLock<InitHandler<'a>>>);
+
+impl HandlerHandle<'_> {
+    pub fn new() -> Self {
+        Self(Arc::new(RwLock::new(InitHandler {
+            started_at: Instant::now(),
+            state: ManagerState::Unknown,
+            next: None,
+        })))
+    }
+
+    pub fn get_status(&self) -> (Duration, Option<(usize, usize)>) {
+        self.0.read().unwrap().get_status()
+    }
+
+    pub fn list_devices(&self) -> HashMap<Uuid, PeripheralInfo> {
+        self.0.read().unwrap().list_devices()
+    }
+
+    pub fn handle_event(&self, event: Arc<Mutex<CentralEvent>>, central: &CentralManager) {
+        self.0.write().unwrap().handle_event(event, central)
+    }
+
+    // TODO(df): Locking and unlocking need to occur on the same thread.
+    // So async function can't have .read() locking.
+    /*
+    pub async fn connect_to_device(&self, uuid: Uuid) -> Result<Peripheral, String> {
+        if let Some(handler) = &self.0.read().unwrap().next {
+            info!("invoking connect_to_device '{:?}'", uuid);
+            handler.connect_to_device(uuid).await
+        } else {
+            panic!("Can't find device");
+        }
+    }
+*/
+    pub fn find_device(&self, uuid_substr: String) -> Option<PeripheralInfo> {
+        if let Some(handler) = &self.0.read().unwrap().next {
+            handler.find_device(uuid_substr)
+        } else {
+            panic!("Can't find device");
+        }
+    }
+}
+
+struct InitHandler<'a> {
     started_at: Instant,
     state: ManagerState,
     next: Option<RootHandler<'a>>,
@@ -64,14 +108,6 @@ pub struct InitHandler<'a> {
 
 impl InitHandler<'_>
 {
-    pub fn new() -> Self {
-        Self {
-            started_at: Instant::now(),
-            state: ManagerState::Unknown,
-            next: None,
-        }
-    }
-
     pub fn get_status(&self) -> (Duration, Option<(usize, usize)>) {
         (
             Duration::new(self.started_at.elapsed().as_secs(), 0),
@@ -83,9 +119,9 @@ impl InitHandler<'_>
         )
     }
 
-    pub fn list_devices(&self) -> &HashMap<Uuid, PeripheralInfo> {
+    pub fn list_devices(&self) -> HashMap<Uuid, PeripheralInfo> {
         if let Some(handler) = &self.next {
-            &handler.peripherals
+            handler.peripherals.clone()
         } else {
             panic!("Can't list devices");
         }
@@ -94,15 +130,6 @@ impl InitHandler<'_>
     pub fn find_device(&self, uuid_substr: String) -> Option<PeripheralInfo> {
         if let Some(handler) = &self.next {
             handler.find_device(uuid_substr)
-        } else {
-            panic!("Can't find device");
-        }
-    }
-
-    pub async fn connect_to_device(&self, uuid: Uuid) -> Result<Peripheral, String> {
-        if let Some(handler) = &self.next {
-            info!("invoking connect_to_device '{:?}'", uuid);
-            handler.connect_to_device(uuid).await
         } else {
             panic!("Can't find device");
         }
@@ -225,7 +252,7 @@ impl RootHandler<'_> {
             res
         } else {
             Err("cant find".to_string())
-        }
+        };
     }
 
     /*
