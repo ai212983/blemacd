@@ -152,13 +152,11 @@ async fn peer_writer_loop(
                         // Solution would be to wrap handler inside Arc<Mutex<>> and expose the wrapper,
                         // see https://users.rust-lang.org/t/mutable-struct-fields-with-async-await/45395/7
 
-                        /*
                         if let Ok(peripheral) = handler.connect_to_device(matched_id).await {
                             Some(format!("connected to peripheral {:?}", peripheral))
                         } else {
                             Some("error?".to_string())
-                        }*/
-                        None
+                        }
                     } else {
                         None
                     }

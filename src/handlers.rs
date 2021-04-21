@@ -91,6 +91,11 @@ impl HandlerHandle<'_> {
         }
     }
 */
+
+    pub async fn connect_to_device(&self, uuid: Uuid) -> Result<Peripheral, String> {
+        Err("nope".to_string())
+    }
+
     pub fn find_device(&self, uuid_substr: String) -> Option<PeripheralInfo> {
         if let Some(handler) = &self.0.read().unwrap().next {
             handler.find_device(uuid_substr)
