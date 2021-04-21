@@ -118,7 +118,6 @@ async fn peer_writer_loop(
     let mut events = FusedStream::new(Box::pin(messages), Box::pin(shutdown.fuse()));
 
     while let Some(event) = events.next().await {
-
         if let Some(r) = &event.reply {
             let r = if let Some(reply) = match r.as_str() {
                 "status" => { // TODO(df): Move handler.execute out? (return Option<Command>)
@@ -152,10 +151,13 @@ async fn peer_writer_loop(
                         // Solution would be to wrap handler inside Arc<Mutex<>> and expose the wrapper,
                         // see https://users.rust-lang.org/t/mutable-struct-fields-with-async-await/45395/7
 
-                        if let Ok(peripheral) = handler.connect_to_device(matched_id).await {
-                            Some(format!("connected to peripheral {:?}", peripheral))
+                        if let Some(result) = handler.connect_to_device(matched_id).await {
+                            match result {
+                                Ok(peripheral) => Some(format!("connected to peripheral {:?}", peripheral)),
+                                Err(error) => Some(error)
+                            }
                         } else {
-                            Some("error?".to_string())
+                            None
                         }
                     } else {
                         None
