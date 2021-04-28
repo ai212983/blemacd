@@ -61,10 +61,12 @@ impl fmt::Display for PeripheralInfo {
 #[derive(Debug, Clone)]
 enum CommandResult {
     GetStatus(Duration, Option<(usize, usize)>),
+    ListDevices(HashMap<Uuid, PeripheralInfo>),
 }
 
 enum Command {
     GetStatus,
+    ListDevices,
 }
 
 pub struct Controller {
@@ -78,6 +80,17 @@ impl Controller {
         // send command, receive answer, reply
         if let Some(CommandResult::GetStatus(duration, devices)) = receiver.next().await {
             (duration, devices)
+        } else {
+            panic!("Unknown command or empty result");
+        }
+    }
+
+    pub async fn list_devices(&mut self) -> HashMap<Uuid, PeripheralInfo> {
+        let (mut sender, mut receiver) = oneshot::channel();
+        &self.sender.send((Command::ListDevices, sender)).await;
+        // send command, receive answer, reply
+        if let Some(CommandResult::ListDevices(devices)) = receiver.next().await {
+            devices
         } else {
             panic!("Unknown command or empty result");
         }
@@ -118,6 +131,9 @@ impl HandlerHandle {
                                 Command::GetStatus => {
                                     let (duration, devices) = handler.get_status();
                                     sender.send(CommandResult::GetStatus(duration, devices)).await;
+                                },
+                                Command::ListDevices => {
+                                    sender.send(CommandResult::ListDevices(handler.list_devices())).await;
                                 },
                             }
                             },

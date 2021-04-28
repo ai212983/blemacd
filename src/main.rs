@@ -118,9 +118,10 @@ async fn peer_writer_loop(
                     }
                     Some(status)
                 }
-                /*
                 COMMAND_ALL_DEVICES => {
-                    let devices = handler.read().unwrap().list_devices().values()
+                    //let devices = handler.read().unwrap().list_devices().values()
+                    let devices = controller.list_devices().await
+                        .values()
                         .map(|p| p.to_string())
                         .collect::<Vec<String>>();
                     Some(format!(
@@ -128,7 +129,7 @@ async fn peer_writer_loop(
                         devices.len(),
                         devices.join("\n")
                     ))
-                }*/
+                }
                 _ => {
                     info!("'incoming match command");
                     /*  let handler = handler.read().unwrap();
@@ -193,7 +194,6 @@ impl Reply {
         format!("[{}]: {}\n", &self.origin, &self.message.clone())
     }
 }
-
 
 
 // Base logic taken from https://book.async.rs/tutorial/handling_disconnection.html#final-code
