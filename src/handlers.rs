@@ -13,12 +13,13 @@ use std::time::{Instant, Duration};
 use core_bluetooth::central::service::Service;
 use std::fmt::{Debug};
 
-use async_std::{prelude::*, future, task};
-use std::sync::{Arc, Mutex, RwLock};
+use async_std::{future, task};
+use std::sync::{Arc, Mutex};
 use postage::prelude::Sink;
-use std::marker::PhantomData;
-use std::ops::Deref;
 use std::pin::Pin;
+use async_std::task::JoinHandle;
+use futures::{StreamExt, select};
+use async_std::sync::Weak;
 
 
 const PERIPHERAL: &str = "fe3c678b-ab90-42ea-97d8-d13047ffdaa4";
@@ -57,28 +58,79 @@ impl fmt::Display for PeripheralInfo {
     }
 }
 
-pub struct HandlerHandle<'a>(Arc<RwLock<InitHandler<'a>>>);
+#[derive(Debug, Clone)]
+enum CommandResult {
+    GetStatus(Duration, Option<(usize, usize)>),
+}
 
-impl HandlerHandle<'_> {
-    pub fn new() -> Self {
-        Self(Arc::new(RwLock::new(InitHandler {
-            started_at: Instant::now(),
-            state: ManagerState::Unknown,
-            next: None,
-        })))
+enum Command {
+    GetStatus(postage::oneshot::Sender<CommandResult>)
+}
+
+pub struct Controller {
+    sender: postage::mpsc::Sender<Command>,
+}
+
+impl Controller {
+    pub async fn get_status(&mut self) -> (Duration, Option<(usize, usize)>) {
+        let (mut sender, mut receiver) = postage::oneshot::channel();
+        &self.sender.send(Command::GetStatus(sender)).await;
+        // send command, receive answer, reply
+        if let Some(CommandResult::GetStatus(duration, devices)) = receiver.next().await {
+            (duration, devices)
+        } else {
+            panic!("Unknown command or empty result");
+        }
+    }
+}
+
+impl Clone for Controller {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone()
+        }
+    }
+}
+
+pub struct HandlerHandle {
+    handle: JoinHandle<()>,
+}
+
+impl HandlerHandle {
+    pub fn new() -> (Self, Controller) {
+        let (command_sender, command_receiver) = postage::mpsc::channel::<Command>(100);
+        (Self {
+            handle: task::spawn(
+                async move {
+                    let (central, central_receiver) = CentralManager::new();
+                    let mut handler = InitHandler {
+                        started_at: Instant::now(),
+                        state: ManagerState::Unknown,
+                        next: None,
+                    };
+                    let mut command_receiver = command_receiver.fuse();
+                    let mut central_receiver = central_receiver.fuse();
+                    ////
+                    loop {
+                        select! {
+                            command = command_receiver.next() => if let Some(command) = command {
+                                match command {
+                                Command::GetStatus(mut s) => {
+                                    let (duration, devices) = handler.get_status();
+                                    s.send(CommandResult::GetStatus(duration, devices)).await;
+                                },
+                            }
+                            },
+                            central_event = central_receiver.next() => if let Some(event) = central_event {
+                                handler.handle_event(&event, &central);
+                            }
+                        }
+                    }
+                })
+        },
+         Controller { sender: command_sender })
     }
 
-    pub fn get_status(&self) -> (Duration, Option<(usize, usize)>) {
-        self.0.read().unwrap().get_status()
-    }
-
-    pub fn list_devices(&self) -> HashMap<Uuid, PeripheralInfo> {
-        self.0.read().unwrap().list_devices()
-    }
-
-    pub fn handle_event(&self, event: Arc<Mutex<CentralEvent>>, central: &CentralManager) {
-        self.0.write().unwrap().handle_event(event, central)
-    }
 
     // TODO(df): Locking and unlocking need to occur on the same thread.
     // So async function can't have .read() locking.
@@ -92,66 +144,70 @@ impl HandlerHandle<'_> {
         }
     }
 */
-
-    pub fn connect_to_device(&self, uuid: Uuid) -> Pin<Box<dyn std::future::Future<Output=Option<Result<Peripheral, String>>> + Send>> {
-        if let Some(handler) = &self.0.read().unwrap().next {
-            for peripheral in &handler.connected_peripherals {
-                if peripheral.id() == uuid {
-                    return Box::pin(future::ready(Some(Ok(peripheral.clone()))));
-                }
-            }
-
-            // there are two ways of implementing this:
-            // 1) store required uuids with associated futures in some map,
-            //    check this map on every `handle_event`,
-            //    complete futures if there's match
-            // 2) async closure
-            let receiver = handler.receiver.clone();
-            let id = uuid.clone();
-
-            use async_std::stream::StreamExt;
-
-            info!("starting find_map");
-            let fut = Box::pin(async move {
-                let mut receiver = receiver.clone();
-                receiver.find_map(move |event| {
-                    info!("processing event {:?}", event);
-
-                    match &*event.lock().unwrap() {
-                        CentralEvent::PeripheralConnected { peripheral } => {
-                            if peripheral.id() == id {
-                                info!("peripheral connected! {}", peripheral.id());
-                                return Some(Ok(peripheral.clone()));
-                            }
-                        }
-                        CentralEvent::PeripheralConnectFailed { peripheral, error } => {
-                            if peripheral.id() == id {
-                                warn!("failed to connect to peripheral {}", peripheral.id());
-                                // we may want to retry connection
-                                // TODO(df): Output error
-                                return Some(Err("error".to_string()));
-                            }
-                        }
-                        _ => {}
+    /*
+        pub fn connect(&self, peripheral: &Peripheral) -> Pin<Box<dyn std::future::Future<Output=Option<Result<Peripheral, String>>> + Send>> {
+            if let Some(handler) = &self.handler.read().unwrap().next {
+                for peripheral in &handler.connected_peripherals {
+                    if peripheral.id() == peripheral.id() {
+                        return Box::pin(future::ready(Some(Ok(peripheral.clone()))));
                     }
+                }
 
-                    None
-                }).await
-            });
-            central.connect(&peripheral); //TODO: Continue here
-            fut
-        } else {
-            Box::pin(future::ready(Some(Err("no handler".to_string()))))
-        }
-    }
+                // there are two ways of implementing this:
+                // 1) store required uuids with associated futures in some map,
+                //    check this map on every `handle_event`,
+                //    complete futures if there's match
+                // 2) async closure
+                let receiver = handler.receiver.clone();
+                let id = peripheral.id().clone();
 
-    pub fn find_device(&self, uuid_substr: String) -> Option<PeripheralInfo> {
-        if let Some(handler) = &self.0.read().unwrap().next {
-            handler.find_device(uuid_substr)
-        } else {
-            panic!("Can't find device");
+                use async_std::stream::StreamExt;
+
+                info!("starting find_map");
+                let fut = Box::pin(async move {
+                    let mut receiver = receiver.clone();
+                    receiver.find_map(move |event| {
+                        info!("processing event {:?}", event);
+                        {
+                            let event = event.clone();
+                            match &*event.lock().unwrap() {
+                                CentralEvent::PeripheralConnected { peripheral } => {
+                                    if peripheral.id() == id {
+                                        info!("peripheral connected! {}", peripheral.id());
+                                        return Some(Ok(peripheral.clone()));
+                                    }
+                                }
+                                CentralEvent::PeripheralConnectFailed { peripheral, error } => {
+                                    if peripheral.id() == id {
+                                        warn!("failed to connect to peripheral {}", peripheral.id());
+                                        // we may want to retry connection
+                                        // TODO(df): Output error
+                                        return Some(Err("error".to_string()));
+                                    }
+                                }
+                                _ => {}
+                            };
+                        }
+
+                        None
+                    }).await
+                });
+                self.central.lock().unwrap().connect(&peripheral);
+                fut
+            } else {
+                Box::pin(future::ready(Some(Err("no handler".to_string()))))
+            }
         }
-    }
+
+        pub fn find_device(&self, uuid_substr: String) -> Option<PeripheralInfo> {
+            if let Some(handler) = &self.handler.read().unwrap().next {
+                handler.find_device(uuid_substr)
+            } else {
+                panic!("Can't find device");
+            }
+        }
+
+     */
 }
 
 struct InitHandler<'a> {
@@ -181,16 +237,8 @@ impl InitHandler<'_>
         }
     }
 
-    pub fn find_device(&self, uuid_substr: String) -> Option<PeripheralInfo> {
-        if let Some(handler) = &self.next {
-            handler.find_device(uuid_substr)
-        } else {
-            panic!("Can't find device");
-        }
-    }
-
-    pub fn handle_event(&mut self, event: Arc<Mutex<CentralEvent>>, central: &CentralManager) {
-        if let CentralEvent::ManagerStateChanged { new_state } = &*event.lock().unwrap() {
+    fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
+        if let CentralEvent::ManagerStateChanged { new_state } = event {
             self.state = *new_state;
             match new_state {
                 ManagerState::Unsupported => {
@@ -223,7 +271,7 @@ impl InitHandler<'_>
         };
 
         if let Some(handler) = &mut self.next {
-            handler.handle_event(event.clone(), central);
+            handler.handle_event(event, central);
         }
     }
 }
@@ -257,56 +305,6 @@ impl RootHandler<'_> {
             }
         }
         None
-    }
-
-    async fn connect_to_device(&self, uuid: Uuid) -> Result<Peripheral, String> {
-        info!("looking for connected_peripherals");
-        for peripheral in &self.connected_peripherals {
-            if peripheral.id() == uuid {
-                return Ok(peripheral.clone());
-            }
-        }
-
-        // there are two ways of implementing this:
-        // 1) store required uuids with associated futures in some map,
-        //    check this map on every `handle_event`,
-        //    complete futures if there's match
-        // 2) async closure
-        let mut receiver = &mut self.receiver.clone();
-        let id = uuid.clone();
-
-        use async_std::stream::StreamExt;
-
-        info!("starting find_map");
-        let fut = receiver.find_map(move |event| {
-            info!("processing event {:?}", event);
-
-            match &*event.lock().unwrap() {
-                CentralEvent::PeripheralConnected { peripheral } => {
-                    if peripheral.id() == id {
-                        info!("peripheral connected! {}", peripheral.id());
-                        return Some(Ok(peripheral.clone()));
-                    }
-                }
-                CentralEvent::PeripheralConnectFailed { peripheral, error } => {
-                    if peripheral.id() == id {
-                        warn!("failed to connect to peripheral {}", peripheral.id());
-                        // we may want to retry connection
-                        // TODO(df): Output error
-                        return Some(Err("error".to_string()));
-                    }
-                }
-                _ => {}
-            }
-
-            None
-        }).await;
-
-        return if let Some(res) = fut {
-            res
-        } else {
-            Err("cant find".to_string())
-        };
     }
 
     /*
@@ -391,10 +389,10 @@ impl RootHandler<'_> {
         }
     */
 
-    fn handle_event(&mut self, event: Arc<Mutex<CentralEvent>>, central: &CentralManager) {
-        let event_to_send = event.clone();
-        info!("handling_event, {:?}", event.lock().unwrap());
-        match &*event.lock().unwrap() {
+    fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
+        //let event_to_send = event.clone();
+        debug!("handling_event, {:?}", event);
+        match event {
             CentralEvent::PeripheralDiscovered {
                 peripheral,
                 advertisement_data,
@@ -410,19 +408,19 @@ impl RootHandler<'_> {
                     },
                 );
             }
-
-            CentralEvent::GetPeripheralsResult {
-                peripherals,
-                tag: _,
-            } => {
-                for peripheral in peripherals {
-                    debug!("[GetPeripheralsResult]: {}", peripheral.id());
-                    if self.connected_peripherals.insert(peripheral.clone()) {
-                        //println!("connecting to {})", peripheral.id());
-                        central.connect(&peripheral);
-                    }
-                }
-            }
+            /*
+                        CentralEvent::GetPeripheralsResult {
+                            peripherals,
+                            tag: _,
+                        } => {
+                            for peripheral in peripherals {
+                                debug!("[GetPeripheralsResult]: {}", peripheral.id());
+                                if self.connected_peripherals.insert(peripheral.clone()) {
+                                    //println!("connecting to {})", peripheral.id());
+                                    central.connect(&peripheral);
+                                }
+                            }
+                        }*/
             CentralEvent::PeripheralConnected { peripheral } => {
                 self.connected_peripherals.insert(peripheral.clone());
                 info!("registered peripheral {}, total {}", peripheral.id(), self.connected_peripherals.len());
@@ -452,7 +450,7 @@ impl RootHandler<'_> {
 
             _ => {}
         }
-        self.sender.blocking_send(event_to_send);
+        //self.sender.blocking_send(event_to_send).unwrap();
     }
 }
 
