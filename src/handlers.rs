@@ -62,11 +62,13 @@ impl fmt::Display for PeripheralInfo {
 pub enum CommandResult {
     GetStatus(Duration, Option<(usize, usize)>),
     ListDevices(HashMap<Uuid, PeripheralInfo>),
+    FindPeripheral(Option<PeripheralInfo>),
 }
 
 pub enum Command {
     GetStatus,
     ListDevices,
+    FindPeripheral(String),
 }
 
 pub struct Controller {
@@ -77,11 +79,10 @@ impl Controller {
     pub async fn execute(&mut self, command: Command) -> CommandResult {
         let (mut sender, mut receiver) = oneshot::channel();
         &self.sender.send((command, sender)).await;
-        // send command, receive answer, reply
         if let Some(reply) = receiver.next().await {
             reply
         } else {
-            panic!("Unknown command or empty result");
+            panic!("Unexpected 'None' result, sender was prematurely dropped?");
         }
     }
 }
@@ -115,16 +116,8 @@ impl HandlerHandle {
                     ////
                     loop {
                         select! {
-                            command = command_receiver.next() => if let Some((command, mut sender)) = command {
-                                match command {
-                                Command::GetStatus => {
-                                    let (duration, devices) = handler.get_status();
-                                    sender.send(CommandResult::GetStatus(duration, devices)).await;
-                                },
-                                Command::ListDevices => {
-                                    sender.send(CommandResult::ListDevices(handler.list_devices())).await;
-                                },
-                            }
+                            command = command_receiver.next() => if let Some((command, sender)) = command {
+                                handler.execute(command, sender).await
                             },
                             central_event = central_receiver.next() => if let Some(event) = central_event {
                                 handler.handle_event(&event, &central);
@@ -223,6 +216,22 @@ struct InitHandler<'a> {
 
 impl InitHandler<'_>
 {
+    async fn execute(&self, command: Command, mut sender: oneshot::Sender<CommandResult>) -> () {
+        let result = match command {
+            Command::GetStatus => {
+                let (duration, devices) = self.get_status();
+                CommandResult::GetStatus(duration, devices)
+            }
+            Command::ListDevices => CommandResult::ListDevices(self.list_devices()),
+            Command::FindPeripheral(uuid_substr) => {
+                let device = self.next.as_ref().expect("Not initialized").find_device(uuid_substr);
+                CommandResult::FindPeripheral(device)
+            }
+        };
+
+        sender.send(result).await;
+    }
+
     pub fn get_status(&self) -> (Duration, Option<(usize, usize)>) {
         (
             Duration::new(self.started_at.elapsed().as_secs(), 0),
@@ -235,11 +244,7 @@ impl InitHandler<'_>
     }
 
     pub fn list_devices(&self) -> HashMap<Uuid, PeripheralInfo> {
-        if let Some(handler) = &self.next {
-            handler.peripherals.clone()
-        } else {
-            panic!("Can't list devices");
-        }
+        self.next.as_ref().expect("Not initialized").peripherals.clone()
     }
 
     fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {

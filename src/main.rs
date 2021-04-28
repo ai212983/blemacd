@@ -138,10 +138,7 @@ async fn peer_writer_loop(
                 }
                 _ => {
                     info!("'incoming match command");
-                    /*  let handler = handler.read().unwrap();
-                      if let Some(peripheral_info) = {
-                          handler.find_device(r.clone())
-                      } {
+                      if let CommandResult::FindPeripheral(Some(peripheral_info)) = controller.execute(Command::FindPeripheral(r.clone())).await {
                           let matched_id = peripheral_info.peripheral.id();
                           info!("'{}' matched to {}, connecting (not really)", r.clone(), matched_id);
 
@@ -150,6 +147,7 @@ async fn peer_writer_loop(
                           // Solution would be to wrap handler inside Arc<Mutex<>> and expose the wrapper,
                           // see https://users.rust-lang.org/t/mutable-struct-fields-with-async-await/45395/7
 
+                          /*
                           if let Some(result) = handler.connect(&peripheral_info.peripheral).await {
                               match result {
                                   Ok(peripheral) => Some(format!("connected to peripheral {:?}", peripheral)),
@@ -157,12 +155,9 @@ async fn peer_writer_loop(
                               }
                           } else {
                               None
-                          }
-                      } else {
-                          None
-                      }
+                          }*/
+                      };
 
-                     */
                     None
                 }
             } {
