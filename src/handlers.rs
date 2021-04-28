@@ -16,10 +16,9 @@ use std::fmt::{Debug};
 use async_std::{future, task};
 use std::sync::{Arc, Mutex};
 use postage::{prelude::Sink, *};
-use std::pin::Pin;
 use async_std::task::JoinHandle;
 use futures::{StreamExt, select};
-use async_std::sync::Weak;
+use std::cell::RefCell;
 
 
 const PERIPHERAL: &str = "fe3c678b-ab90-42ea-97d8-d13047ffdaa4";
@@ -79,7 +78,7 @@ pub struct Controller {
 
 impl Controller {
     pub async fn execute(&mut self, command: Command) -> CommandResult {
-        let (mut sender, mut receiver) = oneshot::channel();
+        let (sender, mut receiver) = oneshot::channel();
         &self.sender.send((command, sender)).await;
         if let Some(reply) = receiver.next().await {
             reply
@@ -112,6 +111,7 @@ impl HandlerHandle {
                         started_at: Instant::now(),
                         state: ManagerState::Unknown,
                         next: None,
+                        handlers: vec![]
                     };
                     let mut command_receiver = command_receiver.fuse();
                     let mut central_receiver = central_receiver.fuse();
@@ -213,11 +213,12 @@ impl HandlerHandle {
 struct InitHandler<'a> {
     started_at: Instant,
     state: ManagerState,
-    next: Option<RootHandler<'a>>
+    next: Option<RootHandler<'a>>,
+    handlers: Vec<(fn(&CentralEvent) -> Option<CommandResult>, RefCell<oneshot::Sender<CommandResult>>)>,
 }
 
 impl InitHandler<'_> {
-    fn execute(&self, command: Command, mut sender: oneshot::Sender<CommandResult>, central: &CentralManager) -> () {
+    fn execute(&mut self, command: Command, mut sender: oneshot::Sender<CommandResult>, central: &CentralManager) -> () {
         match command {
             Command::GetStatus => {
                 sender.blocking_send(CommandResult::GetStatus(
@@ -237,7 +238,15 @@ impl InitHandler<'_> {
                 sender.blocking_send(CommandResult::FindPeripheral(device))
             }
             Command::ConnectToPeripheral(peripheral) => Ok({
-                // central.connect(&peripheral);
+                &self.handlers.push((|event| {
+                    if let CentralEvent::PeripheralConnected { peripheral } = event {
+                        info!("connected peripheral {:?}", peripheral);
+                        Some(CommandResult::ConnectToPeripheral(peripheral.clone()))
+                    } else {
+                        None
+                    }
+                }, RefCell::new(sender)));
+                central.connect(&peripheral);
             })
         };
 
@@ -279,6 +288,14 @@ impl InitHandler<'_> {
         if let Some(handler) = &mut self.next {
             handler.handle_event(event, central);
         }
+        self.handlers.retain(|(f, sender)|
+            if let Some(result) = f(event) {
+                let mut sender = sender.borrow_mut();
+                sender.blocking_send(result);
+                false
+            } else {
+                true
+            });
     }
 }
 

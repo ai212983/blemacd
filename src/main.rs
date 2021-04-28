@@ -138,17 +138,18 @@ async fn peer_writer_loop(
                 }
                 _ => {
                     info!("'incoming match command");
-                      if let CommandResult::FindPeripheral(Some(peripheral_info)) = controller.execute(Command::FindPeripheral(r.clone())).await {
-                          let matched_id = peripheral_info.peripheral.id();
-                          info!("'{}' matched to {}, connecting", r.clone(), matched_id);
+                    let mut result = None;
+                    if let CommandResult::FindPeripheral(Some(peripheral_info)) = controller.execute(Command::FindPeripheral(r.clone())).await {
+                        let matched_id = peripheral_info.peripheral.id();
+                        info!("'{}' matched to {}, connecting", r.clone(), matched_id);
 
-                          if let CommandResult::ConnectToPeripheral(peripheral) = controller.execute(Command::ConnectToPeripheral(peripheral_info.peripheral)).await {
-                              //Some(format!("connected to peripheral {:?}", peripheral))
-                              info!("connected to peripheral {:?}", peripheral)
-                          }
-                      };
+                        if let CommandResult::ConnectToPeripheral(peripheral) = controller.execute(Command::ConnectToPeripheral(peripheral_info.peripheral)).await {
+                            info!("connected to peripheral {:?}", peripheral);
+                            result = Some(format!("connected to peripheral {:?}", peripheral))
+                        }
+                    };
 
-                    None
+                    result
                 }
             } {
                 reply
