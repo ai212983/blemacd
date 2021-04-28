@@ -13,10 +13,9 @@ use std::time::{Instant, Duration};
 use core_bluetooth::central::service::Service;
 use std::fmt::{Debug};
 
-use async_std::{future, task};
 use std::sync::{Arc, Mutex};
 use postage::{prelude::Sink, *};
-use async_std::task::JoinHandle;
+use async_std::{task, task::JoinHandle};
 use futures::{StreamExt, select};
 use std::cell::RefCell;
 
@@ -69,7 +68,7 @@ pub enum Command {
     GetStatus,
     ListDevices,
     FindPeripheral(String),
-    ConnectToPeripheral(Peripheral)
+    ConnectToPeripheral(Peripheral),
 }
 
 pub struct Controller {
@@ -111,7 +110,7 @@ impl HandlerHandle {
                         started_at: Instant::now(),
                         state: ManagerState::Unknown,
                         next: None,
-                        handlers: vec![]
+                        handlers: vec![],
                     };
                     let mut command_receiver = command_receiver.fuse();
                     let mut central_receiver = central_receiver.fuse();
@@ -214,7 +213,7 @@ struct InitHandler<'a> {
     started_at: Instant,
     state: ManagerState,
     next: Option<RootHandler<'a>>,
-    handlers: Vec<(fn(&CentralEvent) -> Option<CommandResult>, RefCell<oneshot::Sender<CommandResult>>)>,
+    handlers: Vec<(Box<dyn Fn(&CentralEvent) -> Option<CommandResult> + Send>, RefCell<oneshot::Sender<CommandResult>>)>,
 }
 
 impl InitHandler<'_> {
@@ -238,18 +237,21 @@ impl InitHandler<'_> {
                 sender.blocking_send(CommandResult::FindPeripheral(device))
             }
             Command::ConnectToPeripheral(peripheral) => Ok({
-                &self.handlers.push((|event| {
+                let id = peripheral.id().clone();
+                &self.handlers.push((Box::new(move |event| {
+                    //TODO(df): handle CentralEvent::PeripheralConnectFailed { peripheral, error }
                     if let CentralEvent::PeripheralConnected { peripheral } = event {
-                        info!("connected peripheral {:?}", peripheral);
-                        Some(CommandResult::ConnectToPeripheral(peripheral.clone()))
-                    } else {
-                        None
+                        if peripheral.id() == id {
+                            //TODO(df): Thread is not released after disconnect, please check
+                            info!("connected peripheral {:?}    |    {:?}", peripheral, std::thread::current().id());
+                            return Some(CommandResult::ConnectToPeripheral(peripheral.clone()));
+                        }
                     }
-                }, RefCell::new(sender)));
+                    None
+                }), RefCell::new(sender)));
                 central.connect(&peripheral);
             })
         };
-
     }
 
     fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
@@ -270,16 +272,10 @@ impl InitHandler<'_> {
                 }
                 ManagerState::PoweredOn => {
                     info!("bt is powered on, starting peripherals scan");
+                    //TODO(df): Run different type of peripherals search depending on params, for example, by service uuid
+                    //central.get_peripherals_with_services(&[SERVICE.parse().unwrap()])
                     central.scan();
                     self.next = Some(RootHandler::new());
-
-                    //TODO(df): Run different type of peripherals search depending on params
-
-                    // match &self.peripheral_uuid {
-                    //    Some(uuid) => central.get_peripherals(&[uuid.parse().unwrap()]),
-                    //    None => central.scan(),
-                    //}
-                    //central.get_peripherals_with_services(&[SERVICE.parse().unwrap()]) // TODO(df): Implement connection by service uuid
                 }
                 _ => {}
             }
@@ -423,8 +419,9 @@ impl RootHandler<'_> {
                 advertisement_data,
                 rssi: _,
             } => {
+                let address = &self as *const _;
                 debug!("[PeripheralDiscovered]: {}", self.peripherals.len());
-                info!("[PeripheralDiscovered]: {}", self.peripherals.len());
+                info!("[PeripheralDiscovered]: {}  |  {:?} => {:?}", self.peripherals.len(), address, std::thread::current().id());
                 self.peripherals.insert(
                     peripheral.id(),
                     PeripheralInfo {
