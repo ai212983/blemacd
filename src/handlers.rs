@@ -63,12 +63,14 @@ pub enum CommandResult {
     GetStatus(Duration, Option<(usize, usize)>),
     ListDevices(HashMap<Uuid, PeripheralInfo>),
     FindPeripheral(Option<PeripheralInfo>),
+    ConnectToPeripheral(Peripheral),
 }
 
 pub enum Command {
     GetStatus,
     ListDevices,
     FindPeripheral(String),
+    ConnectToPeripheral(Peripheral)
 }
 
 pub struct Controller {
@@ -101,7 +103,7 @@ pub struct HandlerHandle {
 
 impl HandlerHandle {
     pub fn new() -> (Self, Controller) {
-        let (command_sender, command_receiver) = postage::mpsc::channel::<(Command, oneshot::Sender<CommandResult>)>(100);
+        let (command_sender, command_receiver) = mpsc::channel::<(Command, oneshot::Sender<CommandResult>)>(100);
         (Self {
             handle: task::spawn(
                 async move {
@@ -117,7 +119,7 @@ impl HandlerHandle {
                     loop {
                         select! {
                             command = command_receiver.next() => if let Some((command, sender)) = command {
-                                handler.execute(command, sender).await
+                                handler.execute(command, sender, &central)
                             },
                             central_event = central_receiver.next() => if let Some(event) = central_event {
                                 handler.handle_event(&event, &central);
@@ -211,40 +213,34 @@ impl HandlerHandle {
 struct InitHandler<'a> {
     started_at: Instant,
     state: ManagerState,
-    next: Option<RootHandler<'a>>,
+    next: Option<RootHandler<'a>>
 }
 
-impl InitHandler<'_>
-{
-    async fn execute(&self, command: Command, mut sender: oneshot::Sender<CommandResult>) -> () {
-        let result = match command {
+impl InitHandler<'_> {
+    fn execute(&self, command: Command, mut sender: oneshot::Sender<CommandResult>, central: &CentralManager) -> () {
+        match command {
             Command::GetStatus => {
-                let (duration, devices) = self.get_status();
-                CommandResult::GetStatus(duration, devices)
+                sender.blocking_send(CommandResult::GetStatus(
+                    Duration::new(self.started_at.elapsed().as_secs(), 0),
+                    if let Some(handler) = &self.next {
+                        Some((handler.peripherals.len(), handler.connected_peripherals.len()))
+                    } else {
+                        None
+                    },
+                ))
             }
-            Command::ListDevices => CommandResult::ListDevices(self.list_devices()),
+            Command::ListDevices => sender.blocking_send(CommandResult::ListDevices(
+                self.next.as_ref().expect("Not initialized").peripherals.clone()
+            )),
             Command::FindPeripheral(uuid_substr) => {
                 let device = self.next.as_ref().expect("Not initialized").find_device(uuid_substr);
-                CommandResult::FindPeripheral(device)
+                sender.blocking_send(CommandResult::FindPeripheral(device))
             }
+            Command::ConnectToPeripheral(peripheral) => Ok({
+                // central.connect(&peripheral);
+            })
         };
 
-        sender.send(result).await;
-    }
-
-    pub fn get_status(&self) -> (Duration, Option<(usize, usize)>) {
-        (
-            Duration::new(self.started_at.elapsed().as_secs(), 0),
-            if let Some(handler) = &self.next {
-                Some((handler.peripherals.len(), handler.connected_peripherals.len()))
-            } else {
-                None
-            }
-        )
-    }
-
-    pub fn list_devices(&self) -> HashMap<Uuid, PeripheralInfo> {
-        self.next.as_ref().expect("Not initialized").peripherals.clone()
     }
 
     fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
@@ -289,14 +285,14 @@ impl InitHandler<'_>
 struct RootHandler<'a> {
     connected_peripherals: HashSet<Peripheral>,
     peripherals: HashMap<Uuid, PeripheralInfo>,
-    sender: postage::broadcast::Sender<Arc<Mutex<CentralEvent>>>,
-    receiver: postage::broadcast::Receiver<Arc<Mutex<CentralEvent>>>,
+    sender: broadcast::Sender<Arc<Mutex<CentralEvent>>>,
+    receiver: broadcast::Receiver<Arc<Mutex<CentralEvent>>>,
     next: Option<DeviceHandler<'a>>,
 }
 
 impl RootHandler<'_> {
     fn new() -> Self {
-        let (sender, receiver) = postage::broadcast::channel(100);
+        let (sender, receiver) = broadcast::channel(100);
         Self {
             sender,
             receiver,

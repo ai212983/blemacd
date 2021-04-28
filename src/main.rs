@@ -140,22 +140,12 @@ async fn peer_writer_loop(
                     info!("'incoming match command");
                       if let CommandResult::FindPeripheral(Some(peripheral_info)) = controller.execute(Command::FindPeripheral(r.clone())).await {
                           let matched_id = peripheral_info.peripheral.id();
-                          info!("'{}' matched to {}, connecting (not really)", r.clone(), matched_id);
+                          info!("'{}' matched to {}, connecting", r.clone(), matched_id);
 
-                          // TODO(df): We are holding reference to the handler here.
-                          // It makes impossible to update handler with new event, so its a deadlock.
-                          // Solution would be to wrap handler inside Arc<Mutex<>> and expose the wrapper,
-                          // see https://users.rust-lang.org/t/mutable-struct-fields-with-async-await/45395/7
-
-                          /*
-                          if let Some(result) = handler.connect(&peripheral_info.peripheral).await {
-                              match result {
-                                  Ok(peripheral) => Some(format!("connected to peripheral {:?}", peripheral)),
-                                  Err(error) => Some(error)
-                              }
-                          } else {
-                              None
-                          }*/
+                          if let CommandResult::ConnectToPeripheral(peripheral) = controller.execute(Command::ConnectToPeripheral(peripheral_info.peripheral)).await {
+                              //Some(format!("connected to peripheral {:?}", peripheral))
+                              info!("connected to peripheral {:?}", peripheral)
+                          }
                       };
 
                     None
