@@ -22,6 +22,7 @@ use futures::{
 };
 
 use env_logger::{Builder, Env};
+use Command::GetStatus;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 type Sender<T> = mpsc::UnboundedSender<T>;
@@ -95,7 +96,6 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
     Ok(())
 }
 
-// LEFT_HERE(df)
 // We are passing handler to the thread, which is communicating by sharing data (control object), not by messages.
 // Proper solution would be to have cloneable struct to wrap channel and returning async results
 // Maybe copy some code from HandlerHandle
@@ -111,24 +111,30 @@ async fn peer_writer_loop(
         if let Some(r) = &event.reply {
             let r = if let Some(reply) = match r.as_str() {
                 COMMAND_STATUS => { // TODO(df): Move handler.execute out? (return Option<Command>)
-                    let (uptime, devices) = controller.get_status().await;
-                    let mut status = format!("uptime {}", humantime::format_duration(uptime));
-                    if let Some((all, connected)) = devices {
-                        status = status + &*format!(", {} devices detected, {} connected", all, connected);
+                    if let CommandResult::GetStatus(uptime, devices) = controller.execute(Command::GetStatus).await {
+                        let mut status = format!("uptime {}", humantime::format_duration(uptime));
+                        if let Some((all, connected)) = devices {
+                            status = status + &*format!(", {} devices detected, {} connected", all, connected);
+                        }
+                        Some(status)
+                    } else {
+                        None
                     }
-                    Some(status)
                 }
                 COMMAND_ALL_DEVICES => {
                     //let devices = handler.read().unwrap().list_devices().values()
-                    let devices = controller.list_devices().await
-                        .values()
-                        .map(|p| p.to_string())
-                        .collect::<Vec<String>>();
-                    Some(format!(
-                        "{} devices total\n{}",
-                        devices.len(),
-                        devices.join("\n")
-                    ))
+                    if let CommandResult::ListDevices(devices) = controller.execute(Command::ListDevices).await {
+                        let devices = devices.values()
+                            .map(|p| p.to_string())
+                            .collect::<Vec<String>>();
+                        Some(format!(
+                            "{} devices total\n{}",
+                            devices.len(),
+                            devices.join("\n")
+                        ))
+                    } else {
+                        None
+                    }
                 }
                 _ => {
                     info!("'incoming match command");
