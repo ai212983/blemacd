@@ -15,7 +15,7 @@ use std::fmt::{Debug};
 
 use async_std::{future, task};
 use std::sync::{Arc, Mutex};
-use postage::prelude::Sink;
+use postage::{prelude::Sink, *};
 use std::pin::Pin;
 use async_std::task::JoinHandle;
 use futures::{StreamExt, select};
@@ -64,17 +64,17 @@ enum CommandResult {
 }
 
 enum Command {
-    GetStatus(postage::oneshot::Sender<CommandResult>)
+    GetStatus,
 }
 
 pub struct Controller {
-    sender: postage::mpsc::Sender<Command>,
+    sender: mpsc::Sender<(Command, oneshot::Sender<CommandResult>)>,
 }
 
 impl Controller {
     pub async fn get_status(&mut self) -> (Duration, Option<(usize, usize)>) {
-        let (mut sender, mut receiver) = postage::oneshot::channel();
-        &self.sender.send(Command::GetStatus(sender)).await;
+        let (mut sender, mut receiver) = oneshot::channel();
+        &self.sender.send((Command::GetStatus, sender)).await;
         // send command, receive answer, reply
         if let Some(CommandResult::GetStatus(duration, devices)) = receiver.next().await {
             (duration, devices)
@@ -98,7 +98,7 @@ pub struct HandlerHandle {
 
 impl HandlerHandle {
     pub fn new() -> (Self, Controller) {
-        let (command_sender, command_receiver) = postage::mpsc::channel::<Command>(100);
+        let (command_sender, command_receiver) = postage::mpsc::channel::<(Command, oneshot::Sender<CommandResult>)>(100);
         (Self {
             handle: task::spawn(
                 async move {
@@ -113,11 +113,11 @@ impl HandlerHandle {
                     ////
                     loop {
                         select! {
-                            command = command_receiver.next() => if let Some(command) = command {
+                            command = command_receiver.next() => if let Some((command, mut sender)) = command {
                                 match command {
-                                Command::GetStatus(mut s) => {
+                                Command::GetStatus => {
                                     let (duration, devices) = handler.get_status();
-                                    s.send(CommandResult::GetStatus(duration, devices)).await;
+                                    sender.send(CommandResult::GetStatus(duration, devices)).await;
                                 },
                             }
                             },
