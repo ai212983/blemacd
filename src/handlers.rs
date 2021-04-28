@@ -288,6 +288,8 @@ impl InitHandler<'_> {
         if let Some(handler) = &mut self.next {
             handler.handle_event(event, central);
         }
+        // std::vec::Vec::retain is calling predicate with immutable borrow,
+        // so we have to use either retain_mut crate or interior mutability (via RefCell)
         self.handlers.retain(|(f, sender)|
             if let Some(result) = f(event) {
                 let mut sender = sender.borrow_mut();
