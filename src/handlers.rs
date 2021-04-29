@@ -242,8 +242,8 @@ impl InitHandler<'_> {
                     //TODO(df): handle CentralEvent::PeripheralConnectFailed { peripheral, error }
                     if let CentralEvent::PeripheralConnected { peripheral } = event {
                         if peripheral.id() == id {
-                            //TODO(df): Thread is not released after disconnect, please check
-                            info!("connected peripheral {:?}    |    {:?}", peripheral, std::thread::current().id());
+                            //TODO(df): Please check if thread is released after disconnect
+                            info!("connected peripheral {:?}", peripheral);
                             return Some(CommandResult::ConnectToPeripheral(peripheral.clone()));
                         }
                     }
@@ -419,9 +419,8 @@ impl RootHandler<'_> {
                 advertisement_data,
                 rssi: _,
             } => {
-                let address = &self as *const _;
                 debug!("[PeripheralDiscovered]: {}", self.peripherals.len());
-                info!("[PeripheralDiscovered]: {}  |  {:?} => {:?}", self.peripherals.len(), address, std::thread::current().id());
+                info!("[PeripheralDiscovered]: {}", self.peripherals.len());
                 self.peripherals.insert(
                     peripheral.id(),
                     PeripheralInfo {
