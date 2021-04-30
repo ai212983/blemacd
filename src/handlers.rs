@@ -131,7 +131,7 @@ impl HandlerHandle {
     }
 
 
-    // TODO(df): Locking and unlocking need to occur on the same thread.
+    // Locking and unlocking need to occur on the same thread.
     // So async function can't have .read() locking.
     /*
     pub async fn connect_to_device(&self, uuid: Uuid) -> Result<Peripheral, String> {
@@ -180,7 +180,6 @@ impl HandlerHandle {
                                     if peripheral.id() == id {
                                         warn!("failed to connect to peripheral {}", peripheral.id());
                                         // we may want to retry connection
-                                        // TODO(df): Output error
                                         return Some(Err("error".to_string()));
                                     }
                                 }
@@ -238,18 +237,24 @@ impl InitHandler<'_> {
             }
             Command::ConnectToPeripheral(peripheral) => Ok({
                 let id = peripheral.id().clone();
-                &self.handlers.push((Box::new(move |event| {
-                    //TODO(df): handle CentralEvent::PeripheralConnectFailed { peripheral, error }
-                    if let CentralEvent::PeripheralConnected { peripheral } = event {
-                        if peripheral.id() == id {
-                            //TODO(df): Please check if thread is released after disconnect
-                            info!("connected peripheral {:?}", peripheral);
-                            return Some(CommandResult::ConnectToPeripheral(peripheral.clone()));
+                let device = self.next.as_ref().expect("Not initialized").get_connected_device(id);
+
+                if let Some(peripheral) = device {
+                    sender.blocking_send(CommandResult::ConnectToPeripheral(peripheral.clone()));
+                } else {
+                    &self.handlers.push((Box::new(move |event| {
+                        //TODO(df): handle CentralEvent::PeripheralConnectFailed { peripheral, error }
+                        if let CentralEvent::PeripheralConnected { peripheral } = event {
+                            if peripheral.id() == id {
+                                //TODO(df): Check if thread is released after disconnect
+                                info!("connected peripheral {:?}", peripheral);
+                                return Some(CommandResult::ConnectToPeripheral(peripheral.clone()));
+                            }
                         }
-                    }
-                    None
-                }), RefCell::new(sender)));
-                central.connect(&peripheral);
+                        None
+                    }), RefCell::new(sender)));
+                    central.connect(&peripheral);
+                }
             })
         };
     }
@@ -319,96 +324,15 @@ impl RootHandler<'_> {
 
     fn find_device(&self, uuid_substr: String) -> Option<PeripheralInfo> {
         let s = uuid_substr.as_str();
-        for (uuid, peripheral) in &self.peripherals {
-            let uuid_string = uuid.to_string();
-            if uuid_string.contains(s) {
-                return Some(peripheral.clone());
-            }
-        }
-        None
+        &self.peripherals.iter().find_map(|(key, peripheral)|
+            if uuid.to_string().contains(s) { Some(*peripheral.clone()) } else { None })
     }
 
-    /*
-        fn execute<T>(&mut self, command: HandlerCommand) -> T {
-            match command {
-                HandlerCommand::FindDevice(substring) => {
-                    if let Some(handler) = &mut self.next {
-                        None // TODO(df): Add matching for next
-                    } else {
-                        let s = substring.as_str();
-                        let mut result = None;
-                        for (uuid, peripheral) in &self.peripherals {
-                            let uuid_string = uuid.to_string();
-                            if uuid_string.contains(s) {
-                                result = Some(peripheral.clone());
-                                break;
-                            }
-                        }
-                        result
-                    }
-                }
-                HandlerCommand::ConnectToDevice(uuid) => {
-                    if let Some(handler) = &mut self.next {
-                        err("no handler".to_string())
-                    } else {
-                        for peripheral in &self.connected_peripherals {
-                            if peripheral.id() == uuid {
-                                return ok(peripheral.clone());
-                            }
-                        }
+    fn get_connected_device(&self, uuid: Uuid) -> Option<Peripheral> {
+        &self.connected_peripherals.iter().find_map(|peripheral|
+            if uuid == peripheral.id() { Some(*peripheral.clone()) } else { None })
+    }
 
-                        // there are two ways of implementing this:
-                        // 1) store required uuids with associated futures in some map,
-                        //    check this map on every `handle_event`,
-                        //    complete futures if there's match
-                        // 2) async closure
-                        let mut receiver = &self.receiver.clone();
-                        let id = uuid.clone();
-
-                        let fut = async move {
-                            use async_std::stream::StreamExt;
-
-                            if let Some(reply) = receiver.find_map(move |event| {
-                                let event: &CentralEvent = &event.lock().unwrap();
-
-                                match event {
-                                    CentralEvent::PeripheralConnected { peripheral } => {
-                                        if peripheral.id() == id {
-                                            info!("peripheral connected! {}", peripheral.id());
-                                            return Some(Ok(peripheral.clone()));
-                                        }
-                                    }
-                                    CentralEvent::PeripheralConnectFailed { peripheral, error } => {
-                                        if peripheral.id() == id {
-                                            warn!("failed to connect to peripheral {}", peripheral.id());
-                                            // we may want to retry connection
-                                            return Some(Err(error.unwrap().to_string()));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-
-                                None
-                            }).await {
-                                reply
-                            } else {
-                                Err("can't find device".to_string())
-                            }
-                        };
-
-                        fut
-                    }
-                }
-                _ => {
-                    //   if let Some(&mut handler) = self.next {
-                    //       handler.execute(command);
-                    //   } else {
-                    panic!("Can't execute command {}", command.name());
-                    //   }
-                }
-            }
-        }
-    */
 
     fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
         //let event_to_send = event.clone();
