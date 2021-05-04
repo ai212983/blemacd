@@ -18,7 +18,7 @@ use async_std::{
 use futures::{
     channel::mpsc, select, sink::SinkExt, stream::Fuse, AsyncBufReadExt, AsyncWriteExt,
     StreamExt,
-    future::{Future, FutureExt},
+    future::{Either, Future, FutureExt},
 };
 
 use env_logger::{Builder, Env};
@@ -43,6 +43,7 @@ const CHARACTERISTIC: &str = "932c32bd-0002-47a2-835a-a8d455b859dd"; //  on/off 
 
 const COMMAND_STATUS: &str = "status";
 const COMMAND_ALL_DEVICES: &str = "all";
+const COMMAND_CONNECTED_DEVICES: &str = "connected";
 
 
 async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
@@ -96,67 +97,113 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
     Ok(())
 }
 
-// We are passing handler to the thread, which is communicating by sharing data (control object), not by messages.
-// Proper solution would be to have cloneable struct to wrap channel and returning async results
-// Maybe copy some code from HandlerHandle
+// Note: input stream (interactive input) is not the same as input queue (one-liner).
+// Think on if they should be treated the same or not.
+
+struct Session {
+    controller: Controller,
+}
+
+impl Session {
+    fn new(controller: Controller) -> Self {
+        Self { controller }
+    }
+
+    async fn process(&mut self, input: String) -> String {
+        let mut results = vec![];
+        let mut s = 0;
+
+        loop {
+            match self.get_next_command(&input[s..], &results) {
+                Either::Left((command, len)) => {
+                    results.push(self.controller.execute(command).await);
+                    s = s + len;
+                }
+                Either::Right(reply) => {
+                    return reply;
+                }
+            }
+        }
+    }
+
+    fn get_next_command(&self, input: &str, results: &Vec<CommandResult>) -> Either<(Command, usize), String> {
+        if results.len() == 0 {
+            if let Some(token) = input.split_terminator('/').next() {
+                Either::Left((match token {
+                    COMMAND_STATUS => Command::GetStatus,
+                    COMMAND_ALL_DEVICES => Command::ListDevices,
+                    COMMAND_CONNECTED_DEVICES => Command::ListConnectedDevices,
+                    _ => {
+                        info!("incoming custom command: '{:?}'", token);
+                        Command::FindPeripheral(token.to_string())
+                    }
+                }, token.len() + 1))
+            } else {
+                Either::Right("empty input".to_string())
+            }
+        } else {
+            if let Some(result) = results.last() {
+                match result {
+                    CommandResult::GetStatus(uptime, devices) => {
+                        let mut status = format!("uptime {}", humantime::format_duration(*uptime));
+                        if let Some((all, connected)) = devices {
+                            status = status + &*format!(", {} devices detected, {} connected", all, connected);
+                        }
+                        Either::Right(status)
+                    }
+                    CommandResult::ListDevices(devices) => {
+                        let devices = devices.values()
+                            .map(|p| p.to_string())
+                            .collect::<Vec<String>>();
+                        Either::Right(format!(
+                            "{} devices total\n{}",
+                            devices.len(),
+                            devices.join("\n")
+                        ))
+                    }
+                    CommandResult::FindPeripheral(peripheral) =>
+                        if let Some(peripheral) = peripheral {
+                            Either::Left((Command::ConnectToPeripheral(peripheral.peripheral.clone()), 0))
+                        } else {
+                            Either::Right("peripheral match not found".to_string())
+                        },
+                    CommandResult::ConnectToPeripheral(peripheral) => {
+                        info!("connected to peripheral {:?}", peripheral);
+
+                        if input.is_empty() {
+                            Either::Right(format!("connected to peripheral {:?}, input: {:?}", peripheral, input))
+                        } else {
+                            let token = input.split_terminator('/').next();
+                            info!("SERVICE ID: {:?}, {:?}", input, token);
+                            Either::Left((Command::FindService(peripheral.clone(), input.to_string()), 0))
+                        }
+                        //TODO(df): parse input further
+                    }
+                    CommandResult::FindService(service) => {
+                        Either::Right(format!("services discovered"))
+                    }
+                    _ => Either::Right("unknown result".to_string())
+                }
+            } else {
+                Either::Right("no results".to_string())
+            }
+        }
+    }
+}
+
 async fn peer_writer_loop(
-    mut controller: Controller,
+    controller: Controller,
     messages: &mut Receiver<String>,
     stream: Arc<UnixStream>,
     shutdown: Receiver<Void>) -> Result<()> {
     let mut stream = &*stream;
     let mut events = FusedStream::new(Box::pin(messages), Box::pin(shutdown.fuse()));
 
+    let mut session = Session::new(controller);
+
     while let Some(event) = events.next().await {
         if let Some(r) = &event.reply {
-            let r = if let Some(reply) = match r.as_str() {
-                COMMAND_STATUS => { // TODO(df): Move handler.execute out? (return Option<Command>)
-                    if let CommandResult::GetStatus(uptime, devices) = controller.execute(Command::GetStatus).await {
-                        let mut status = format!("uptime {}", humantime::format_duration(uptime));
-                        if let Some((all, connected)) = devices {
-                            status = status + &*format!(", {} devices detected, {} connected", all, connected);
-                        }
-                        Some(status)
-                    } else {
-                        None
-                    }
-                }
-                COMMAND_ALL_DEVICES => {
-                    //let devices = handler.read().unwrap().list_devices().values()
-                    if let CommandResult::ListDevices(devices) = controller.execute(Command::ListDevices).await {
-                        let devices = devices.values()
-                            .map(|p| p.to_string())
-                            .collect::<Vec<String>>();
-                        Some(format!(
-                            "{} devices total\n{}",
-                            devices.len(),
-                            devices.join("\n")
-                        ))
-                    } else {
-                        None
-                    }
-                }
-                _ => {
-                    info!("'incoming match command");
-                    let mut result = None;
-                    if let CommandResult::FindPeripheral(Some(peripheral_info)) = controller.execute(Command::FindPeripheral(r.clone())).await {
-                        let matched_id = peripheral_info.peripheral.id();
-                        info!("'{}' matched to {}, connecting", r.clone(), matched_id);
-
-                        if let CommandResult::ConnectToPeripheral(peripheral) = controller.execute(Command::ConnectToPeripheral(peripheral_info.peripheral)).await {
-                            info!("connected to peripheral {:?}", peripheral);
-                            result = Some(format!("connected to peripheral {:?}", peripheral))
-                        }
-                    };
-
-                    result
-                }
-            } {
-                reply
-            } else {
-                "oops, nothing".to_string()
-            };
-
+            let r = session.process(r.clone()).await;
             let s = if event.shutdown {
                 r.to_owned() + ", bye!"
             } else {
@@ -164,7 +211,6 @@ async fn peer_writer_loop(
             };
             AsyncWriteExt::write_all(&mut stream, s.as_bytes()).await?;
         }
-
         if event.shutdown {
             break;
         }
