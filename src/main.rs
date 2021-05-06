@@ -476,3 +476,30 @@ pub fn main() {
     cleanup_socket();
     info!("exiting application");
 }
+
+// -------
+
+fn consume_token(input: &mut String) -> Option<String> {
+    if let Some(token) = input.split_terminator('/').next().map(String::from) {
+        let mut i = token.len();
+        if input.len() > i {
+            i = i + 1;
+        }
+        *input = input.get(i..).unwrap().to_string();
+        Some(token.to_string())
+    } else {
+        None
+    }
+}
+
+#[test]
+fn consume_token_test() {
+    let mut input = &mut "212/32/988".to_string();
+    assert_eq!(consume_token(input), Some("212".to_string()));
+    assert_eq!(input, "32/988");
+
+    let mut input = &mut "212".to_string();
+    assert_eq!(consume_token(input), Some("212".to_string()));
+    assert_eq!(input, "");
+    assert_eq!(consume_token(input), None);
+}
