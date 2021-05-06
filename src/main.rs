@@ -1,11 +1,7 @@
-use log::*;
-
 use std::collections::hash_map::{Entry, HashMap};
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
-
-use blemacd::handlers::*;
 
 use async_std::{
     io::BufReader,
@@ -14,16 +10,17 @@ use async_std::{
     prelude::*,
     task,
 };
-
-use futures::{
-    channel::mpsc, select, sink::SinkExt, stream::Fuse, AsyncBufReadExt, AsyncWriteExt,
-    StreamExt,
-    future::{Either, Future, FutureExt},
-};
-
-use env_logger::{Builder, Env};
-use Command::GetStatus;
 use core_bluetooth::uuid::Uuid;
+use env_logger::{Builder, Env};
+use futures::{
+    AsyncBufReadExt, AsyncWriteExt, channel::mpsc, future::{Either, Future, FutureExt}, select, sink::SinkExt,
+    stream::Fuse,
+    StreamExt,
+};
+use log::*;
+
+use blemacd::handlers::*;
+use Command::GetStatus;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 type Sender<T> = mpsc::UnboundedSender<T>;
@@ -115,18 +112,12 @@ impl Session {
 
     async fn process(&mut self, input: String) -> String {
         let mut results = vec![];
-        let mut s = 0;
+        let mut input = &mut input.clone();
 
         loop {
-            match self.get_next_command(&input[s..], &results) {
-                Either::Left((command, len)) => {
+            match self.get_next_command(input, &results) {
+                Either::Left(command) => {
                     results.push(self.controller.execute(command).await);
-                    s = s + len;
-                    if s < input.len() {
-                        if "/" == &input[s..(s + 1)] {
-                            s = s + 1;
-                        }
-                    }
                 }
                 Either::Right(reply) => {
                     return reply;
@@ -135,10 +126,10 @@ impl Session {
         }
     }
 
-    fn get_next_command(&mut self, input: &str, results: &Vec<CommandResult>) -> Either<(Command, usize), String> {
+    fn get_next_command(&mut self, input: &mut String, results: &Vec<CommandResult>) -> Either<Command, String> {
         if results.len() == 0 {
-            if let Some(token) = input.split_terminator('/').next() {
-                Either::Left((match token {
+            if let Some(token) = consume_token(input) {
+                Either::Left(match token.as_str() {
                     COMMAND_STATUS => Command::GetStatus,
                     COMMAND_ALL_DEVICES => Command::ListDevices,
                     COMMAND_CONNECTED_DEVICES => Command::ListConnectedDevices,
@@ -146,7 +137,7 @@ impl Session {
                         info!("incoming custom command: '{:?}'", token);
                         Command::FindPeripheral(token.to_string())
                     }
-                }, token.len()))
+                })
             } else {
                 Either::Right("empty input".to_string())
             }
@@ -172,7 +163,7 @@ impl Session {
                     }
                     CommandResult::FindPeripheral(peripheral) =>
                         if let Some(peripheral) = peripheral {
-                            Either::Left((Command::ConnectToPeripheral(peripheral.peripheral.clone()), 0))
+                            Either::Left(Command::ConnectToPeripheral(peripheral.peripheral.clone()))
                         } else {
                             Either::Right("peripheral match not found".to_string())
                         },
@@ -181,9 +172,9 @@ impl Session {
                         if input.is_empty() {
                             Either::Right(format!("connected to peripheral {:?}, input: {:?}", peripheral, input))
                         } else {
-                            if let Some(token) = input.split_terminator('/').next() {
+                            if let Some(token) = consume_token(input) {
                                 info!("Connected to peripheral, searching for Service {:?}", input);
-                                Either::Left((Command::FindService(peripheral.clone(), token.to_string()), token.len()))
+                                Either::Left(Command::FindService(peripheral.clone(), token.to_string()))
                             } else {
                                 Either::Right("connected to peripheral".to_string())
                             }
@@ -192,9 +183,9 @@ impl Session {
                     }
                     CommandResult::FindService(peripheral, service) => {
                         if let Some(service) = service {
-                            if let Some(token) = input.split_terminator('/').next() {
+                            if let Some(token) = consume_token(input) {
                                 info!("service found: {:?}, searching for Characteristic: {:?}", service, token);
-                                Either::Left((Command::FindCharacteristic(peripheral.clone(), service.clone(), token.to_string()), token.len()))
+                                Either::Left(Command::FindCharacteristic(peripheral.clone(), service.clone(), token.to_string()))
                             } else {
                                 Either::Right(format!("service found: {:?}", service))
                             }
@@ -204,10 +195,9 @@ impl Session {
                     }
                     CommandResult::FindCharacteristic(peripheral, characteristic) => {
                         if let Some(characteristic) = characteristic {
-                            let token = input.split_terminator('/').next();
-                            info!("characteristic discovered: {:?}, next token: '{:?}'", characteristic, token);
-                            Either::Left(if let Some(token) = input.split_terminator('/').next() {
-                                (if token == "!" {
+                            info!("characteristic found: {:?}", characteristic);
+                            Either::Left(if let Some(token) = consume_token(input) {
+                                if token == "!" {
                                     self.pending_changes.insert(characteristic.id(),
                                                                 |v| if v == 0
                                                                 { 1 } else { 0 });
@@ -215,9 +205,9 @@ impl Session {
                                 } else {
                                     //TODO(df): Proper multi-byte parsing
                                     Command::WriteCharacteristic(peripheral.clone(), characteristic.clone(), vec![token.parse().unwrap()])
-                                }, token.len())
+                                }
                             } else {
-                                (Command::ReadCharacteristic(peripheral.clone(), characteristic.clone()), 0)
+                                Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
                             })
                         } else {
                             Either::Right("characteristic not found".to_string())
@@ -227,8 +217,8 @@ impl Session {
                         if let Some(value) = value {
                             if let Some((_, change)) = self.pending_changes.remove_entry(&characteristic.id()) {
                                 info!("characteristic read: {:?}, now updating", characteristic);
-                                Either::Left((Command::WriteCharacteristic(peripheral.clone(), characteristic.clone(),
-                                                                           vec![change(value[0])]), 0))
+                                Either::Left(Command::WriteCharacteristic(
+                                    peripheral.clone(), characteristic.clone(), vec![change(value[0])]))
                             } else {
                                 info!("characteristic read: {:?}", characteristic);
                                 Either::Right(value.iter().map(|v| format!("{:02X?}", v)).collect::<Vec<String>>().join(" "))
