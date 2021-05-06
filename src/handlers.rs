@@ -19,6 +19,8 @@ use futures::{StreamExt, select};
 use std::cell::RefCell;
 use std::pin::Pin;
 use futures::future::Either;
+use core_bluetooth::central::characteristic::WriteKind;
+use core_bluetooth::error::Error;
 
 
 const PERIPHERAL: &str = "fe3c678b-ab90-42ea-97d8-d13047ffdaa4";
@@ -65,7 +67,10 @@ pub enum CommandResult {
     ListDevices(HashMap<Uuid, PeripheralInfo>),
     FindPeripheral(Option<PeripheralInfo>),
     ConnectToPeripheral(Peripheral),
-    FindService(Option<Service>),
+    FindService(Peripheral, Option<Service>),
+    FindCharacteristic(Peripheral, Option<Characteristic>),
+    ReadCharacteristic(Peripheral, Characteristic, Option<Vec<u8>>),
+    WriteCharacteristic(Peripheral, Characteristic, Result<(), Error>),
 }
 
 pub enum Command {
@@ -75,6 +80,9 @@ pub enum Command {
     FindPeripheral(String),
     ConnectToPeripheral(Peripheral),
     FindService(Peripheral, String),
+    FindCharacteristic(Peripheral, Service, String),
+    ReadCharacteristic(Peripheral, Characteristic),
+    WriteCharacteristic(Peripheral, Characteristic, Vec<u8>),
 }
 
 pub struct Controller {
@@ -193,19 +201,78 @@ impl InitHandler<'_> {
                 &self.handlers.push((Box::new(move |event| {
                     if let CentralEvent::ServicesDiscovered { peripheral, services } = event {
                         if peripheral.id() == id {
-                            //TODO(df): Check if thread is released after disconnect
                             info!("connected services: {:?}", services);
-                            if let Ok(services) = services {
-                                return Some(CommandResult::FindService(None));
-                            } else {
-                                return Some(CommandResult::FindService(None));
-                            }
+                            return Some(CommandResult::FindService(
+                                peripheral.clone(),
+                                if let Ok(services) = services {
+                                    services.iter()
+                                        .find(|s| s.id().to_string().contains(&uuid_substr))
+                                        .map(|s| s.clone())
+                                } else {
+                                    None
+                                }));
                         }
                     }
                     None
                 }), RefCell::new(sender)));
                 peripheral.discover_services();
-            })
+            }),
+            Command::FindCharacteristic(peripheral, service, uuid_substr) => Ok({
+                let peripheral_id = peripheral.id();
+                let service_id = service.id();
+                &self.handlers.push((Box::new(move |event| {
+                    if let CentralEvent::CharacteristicsDiscovered { peripheral, service, characteristics } = event {
+                        if peripheral.id() == peripheral_id && service.id() == service_id {
+                            info!("connected characteristics: {:?}", characteristics);
+                            return Some(CommandResult::FindCharacteristic(
+                                peripheral.clone(),
+                                if let Ok(characteristics) = characteristics {
+                                    characteristics.iter()
+                                        .find(|s| s.id().to_string().contains(&uuid_substr))
+                                        .map(|s| s.clone())
+                                } else {
+                                    None
+                                }));
+                        }
+                    }
+                    None
+                }), RefCell::new(sender)));
+                peripheral.discover_characteristics(&service);
+            }),
+            Command::ReadCharacteristic(peripheral, characteristic) => Ok({
+                let peripheral_id = peripheral.id();
+                let characteristic_id = characteristic.id();
+                &self.handlers.push((Box::new(move |event| {
+                    if let CentralEvent::CharacteristicValue { peripheral, characteristic, value } = event {
+                        if peripheral.id() == peripheral_id && characteristic.id() == characteristic_id {
+                            info!("read characteristic {:?}: {:?}", characteristic_id, value);
+                            return Some(CommandResult::ReadCharacteristic(
+                                peripheral.clone(),
+                                characteristic.clone(),
+                                if let Ok(value) = value { Some(value.clone()) } else { None }));
+                        }
+                    }
+                    None
+                }), RefCell::new(sender)));
+                peripheral.read_characteristic(&characteristic);
+            }
+            ),
+            Command::WriteCharacteristic(peripheral, characteristic, data) => Ok({
+                let peripheral_id = peripheral.id();
+                let characteristic_id = characteristic.id();
+                &self.handlers.push((Box::new(move |event| {
+                    if let CentralEvent::WriteCharacteristicResult { peripheral, characteristic, result } = event {
+                        if peripheral.id() == peripheral_id && characteristic.id() == characteristic_id {
+                            info!("write characteristic result {:?}: {:?}", characteristic_id, result);
+                            return Some(CommandResult::WriteCharacteristic(
+                                peripheral.clone(), characteristic.clone(), result.clone()));
+                        }
+                    }
+                    None
+                }), RefCell::new(sender)));
+                peripheral.write_characteristic(&characteristic, &data, WriteKind::WithResponse);
+            }
+            )
         };
     }
 
