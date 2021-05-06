@@ -1,27 +1,24 @@
-use log::*;
-
-use std::collections::{HashMap, HashSet};
-use std::process::exit;
-
-use core_bluetooth::{*, central::{*,
-                                  peripheral::Peripheral,
-                                  service::Service,
-                                  characteristic::Characteristic},
-                     uuid::Uuid};
 use core::fmt;
-use std::time::{Instant, Duration};
-use std::fmt::{Debug};
-
-use std::sync::{Arc, Mutex};
-use postage::{prelude::Sink, *};
-use async_std::{prelude::*, stream, task, task::{Context, JoinHandle, Poll}};
-use futures::{StreamExt, select};
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::fmt::Debug;
 use std::pin::Pin;
-use futures::future::Either;
+use std::process::exit;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use async_std::{prelude::*, stream, task, task::{Context, JoinHandle, Poll}};
+use core_bluetooth::{*, central::{*,
+                                  characteristic::Characteristic,
+                                  peripheral::Peripheral,
+                                  service::Service},
+                     uuid::Uuid};
 use core_bluetooth::central::characteristic::WriteKind;
 use core_bluetooth::error::Error;
-
+use futures::{select, StreamExt};
+use futures::future::Either;
+use log::*;
+use postage::{*, prelude::Sink};
 
 const PERIPHERAL: &str = "fe3c678b-ab90-42ea-97d8-d13047ffdaa4";
 // local hue lamp. THIS ID WILL BE DIFFERENT FOR ANOTHER DEVICE!
@@ -172,7 +169,9 @@ impl InitHandler<'_> {
                 self.next.as_ref().expect("Not initialized").peripherals.clone()
             )),
             Command::FindPeripheral(uuid_substr) => {
+                info!("Finding peripheral with substring '{:?}'", uuid_substr);
                 let device = self.next.as_ref().expect("Not initialized").find_device(uuid_substr);
+                info!("Device search result '{:?}'", device);
                 sender.blocking_send(CommandResult::FindPeripheral(device))
             }
             Command::ConnectToPeripheral(peripheral) => Ok({
@@ -182,6 +181,7 @@ impl InitHandler<'_> {
                 if let Some(peripheral) = device {
                     sender.blocking_send(CommandResult::ConnectToPeripheral(peripheral.clone()));
                 } else {
+                    // TODO(df): !!! Simplify pushing handlers!
                     &self.handlers.push((Box::new(move |event| {
                         //TODO(df): handle CentralEvent::PeripheralConnectFailed { peripheral, error }
                         if let CentralEvent::PeripheralConnected { peripheral } = event {

@@ -20,7 +20,6 @@ use futures::{
 use log::*;
 
 use blemacd::handlers::*;
-use Command::GetStatus;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 type Sender<T> = mpsc::UnboundedSender<T>;
@@ -198,13 +197,16 @@ impl Session {
                             info!("characteristic found: {:?}", characteristic);
                             Either::Left(if let Some(token) = consume_token(input) {
                                 if token == "!" {
-                                    self.pending_changes.insert(characteristic.id(),
-                                                                |v| if v == 0
-                                                                { 1 } else { 0 });
+                                    self.pending_changes.insert(
+                                        characteristic.id(),
+                                        |v| if v == 0 { 1 } else { 0 },
+                                    );
                                     Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
                                 } else {
                                     //TODO(df): Proper multi-byte parsing
-                                    Command::WriteCharacteristic(peripheral.clone(), characteristic.clone(), vec![token.parse().unwrap()])
+                                    Command::WriteCharacteristic(
+                                        peripheral.clone(), characteristic.clone(), vec![token.parse().unwrap()],
+                                    )
                                 }
                             } else {
                                 Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
@@ -227,7 +229,7 @@ impl Session {
                             Either::Right("characteristic read failed".to_string())
                         }
                     }
-                    CommandResult::WriteCharacteristic(peripheral, characteristic, result) => {
+                    CommandResult::WriteCharacteristic(_, _, result) => {
                         Either::Right(format!("{:?}", result))
                     }
                     _ => Either::Right("unknown result".to_string())
