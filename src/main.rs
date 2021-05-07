@@ -34,6 +34,7 @@ const COMMAND_STATUS: &str = "status";
 const COMMAND_ALL_DEVICES: &str = "all";
 const COMMAND_CONNECTED_DEVICES: &str = "connected";
 
+
 async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     // https://docs.rs/async-std/0.99.3/async_std/os/unix/net/struct.UnixListener.html
     let listener = UnixListener::bind(path).await?;
@@ -44,11 +45,9 @@ async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     let mut incoming = listener.incoming();
     while let Some(stream) = incoming.next().await {
         let stream = stream?;
-        info!("incoming connection: {:?}", stream.peer_addr()?);
-        spawn_and_log_error(peer_reader_loop(broker_sender.clone(), stream, {
-            peer_id += 1;
-            peer_id
-        }));
+        peer_id = peer_id + 1;
+        info!("incoming connection #{:?}", peer_id);
+        spawn_and_log_error(peer_reader_loop(broker_sender.clone(), stream, peer_id));
     }
     drop(broker_sender);
     broker_handle.await;
@@ -84,9 +83,6 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
 
     Ok(())
 }
-
-// Note: input stream (interactive input) is not the same as input queue (one-liner).
-// Think on if they should be treated the same or not.
 
 struct Session {
     controller: Controller,
@@ -125,7 +121,7 @@ impl Session {
                     COMMAND_ALL_DEVICES => Command::ListDevices,
                     COMMAND_CONNECTED_DEVICES => Command::ListConnectedDevices,
                     _ => {
-                        info!("incoming custom command: '{:?}'", token);
+                        info!("request for peripheral: '{:?}'", token);
                         Command::FindPeripheral(token.to_string())
                     }
                 })
@@ -170,7 +166,6 @@ impl Session {
                                 Either::Right("connected to peripheral".to_string())
                             }
                         }
-                        //TODO(df): parse input further
                     }
                     CommandResult::FindService(peripheral, service) => {
                         if let Some(service) = service {
@@ -195,7 +190,7 @@ impl Session {
                                     );
                                     Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
                                 } else {
-                                    //TODO(df): Proper multi-byte parsing
+                                    //TODO(df): Add proper multi-byte parsing
                                     Command::WriteCharacteristic(
                                         peripheral.clone(), characteristic.clone(), vec![token.parse().unwrap()],
                                     )
@@ -247,9 +242,9 @@ async fn peer_writer_loop(
         if let Some(r) = &event.reply {
             let r = session.process(r.clone()).await;
             let s = if event.shutdown {
-                r.to_owned() + ", bye!"
+                r.to_owned()
             } else {
-                r.to_owned() + ", but wait"
+                r.to_owned() + "\n"
             };
             AsyncWriteExt::write_all(&mut stream, s.as_bytes()).await?;
         }
@@ -305,7 +300,6 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
             }
         };
 
-        //TODO(df): peer_event should be dispatched and processed in its own thread
         match peer_event {
 
             // When processing commands, broker_loop job is to execute command and return Reply
