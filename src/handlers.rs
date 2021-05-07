@@ -3,17 +3,15 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::process::exit;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_std::{task, task::JoinHandle};
 use core_bluetooth::{*, central::{*,
-                                  characteristic::Characteristic,
+                                  characteristic::{Characteristic, WriteKind},
                                   peripheral::Peripheral,
                                   service::Service},
+                     error::Error,
                      uuid::Uuid};
-use core_bluetooth::central::characteristic::WriteKind;
-use core_bluetooth::error::Error;
 use futures::{select, StreamExt};
 use log::*;
 use postage::{*, prelude::Sink};
@@ -191,6 +189,7 @@ impl CharacteristicsDiscoveredMatcher {
 }
 
 impl EventMatcher for CharacteristicsDiscoveredMatcher {
+    //noinspection DuplicatedCode
     fn match_event(&self, event: &CentralEvent) -> Option<CommandResult> {
         if let CentralEvent::CharacteristicsDiscovered { peripheral, service, characteristics } = event {
             if peripheral.id() == self.peripheral_id && service.id() == self.service_id {
@@ -264,22 +263,23 @@ impl Clone for Controller {
     }
 }
 
-pub struct HandlerHandle {
+pub struct AsyncManager {
     handle: JoinHandle<()>,
 }
 
-impl HandlerHandle {
+impl AsyncManager {
     pub fn new() -> (Self, Controller) {
         let (command_sender, command_receiver) = mpsc::channel::<(Command, oneshot::Sender<CommandResult>)>(100);
         (Self {
             handle: task::spawn(
                 async move {
                     let (central, central_receiver) = CentralManager::new();
-                    let mut handler = InitHandler {
+                    let mut handler = InnerHandler {
                         started_at: Instant::now(),
                         state: ManagerState::Unknown,
-                        next: None,
                         handlers: vec![],
+                        connected_peripherals: Default::default(),
+                        peripherals: Default::default(),
                     };
                     let mut command_receiver = command_receiver.fuse();
                     let mut central_receiver = central_receiver.fuse();
@@ -300,41 +300,38 @@ impl HandlerHandle {
     }
 }
 
-struct InitHandler {
+struct InnerHandler {
     started_at: Instant,
     state: ManagerState,
-    next: Option<RootHandler>,
     handlers: Vec<(Box<dyn Fn(&CentralEvent) -> Option<CommandResult> + Send>, RefCell<oneshot::Sender<CommandResult>>)>,
+    connected_peripherals: HashSet<Peripheral>,
+    peripherals: HashMap<Uuid, PeripheralInfo>,
 }
 
-impl InitHandler {
+impl InnerHandler {
     fn execute(&mut self, command: Command, mut sender: oneshot::Sender<CommandResult>, central: &CentralManager) {
         match command {
             Command::GetStatus => {
                 sender.blocking_send(CommandResult::GetStatus(
                     Duration::new(self.started_at.elapsed().as_secs(), 0),
-                    if let Some(handler) = &self.next {
-                        Some((handler.peripherals.len(), handler.connected_peripherals.len()))
-                    } else {
-                        None
-                    },
+                    Some((self.peripherals.len(), self.connected_peripherals.len())),
                 )).unwrap()
             }
             Command::ListConnectedDevices => sender.blocking_send(CommandResult::ListConnectedDevices(
-                self.next.as_ref().expect("Not initialized").connected_peripherals.clone()
+                self.connected_peripherals.clone()
             )).unwrap(),
             Command::ListDevices => sender.blocking_send(CommandResult::ListDevices(
-                self.next.as_ref().expect("Not initialized").peripherals.clone()
+                self.peripherals.clone()
             )).unwrap(),
             Command::FindPeripheral(uuid_substr) => {
                 info!("Finding peripheral with substring '{:?}'", uuid_substr);
-                let device = self.next.as_ref().expect("Not initialized").find_device(uuid_substr);
+                let device = self.find_device(uuid_substr);
                 info!("Device search result '{:?}'", device);
                 sender.blocking_send(CommandResult::FindPeripheral(device)).unwrap()
             }
             Command::ConnectToPeripheral(peripheral) => {
                 let id = peripheral.id().clone();
-                let device = self.next.as_ref().expect("Not initialized").get_connected_device(id);
+                let device = self.get_connected_device(id);
 
                 if let Some(peripheral) = device {
                     sender.blocking_send(CommandResult::ConnectToPeripheral(peripheral.clone())).unwrap();
@@ -346,7 +343,7 @@ impl InitHandler {
                         }));
                     central.connect(&peripheral);
                 }
-            },
+            }
             Command::FindService(peripheral, uuid_substr) => {
                 &self.add_matcher(sender, ServicesDiscoveredMatcher::new(
                     &peripheral, uuid_substr,
@@ -354,7 +351,7 @@ impl InitHandler {
                         CommandResult::FindService(peripheral.clone(), service)
                     }));
                 peripheral.discover_services();
-            },
+            }
             Command::FindCharacteristic(peripheral, service, uuid_substr) => {
                 &self.add_matcher(sender, CharacteristicsDiscoveredMatcher::new(
                     &peripheral, &service, uuid_substr,
@@ -362,7 +359,7 @@ impl InitHandler {
                         CommandResult::FindCharacteristic(peripheral.clone(), characteristic)
                     }));
                 peripheral.discover_characteristics(&service);
-            },
+            }
             Command::ReadCharacteristic(peripheral, characteristic) => {
                 &self.add_matcher(sender, CharacteristicValueMatcher::new(
                     &peripheral, &characteristic,
@@ -373,7 +370,7 @@ impl InitHandler {
                             if let Ok(value) = value { Some(value.clone()) } else { None })
                     }));
                 peripheral.read_characteristic(&characteristic);
-            },
+            }
             Command::WriteCharacteristic(peripheral, characteristic, data) => {
                 &self.add_matcher(sender, WriteCharacteristicResultMatcher::new(
                     &peripheral, &characteristic, |peripheral, characteristic, result| {
@@ -385,87 +382,33 @@ impl InitHandler {
         };
     }
 
-    fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
-        if let CentralEvent::ManagerStateChanged { new_state } = event {
-            self.state = *new_state;
-            match new_state {
-                ManagerState::Unsupported => {
-                    eprintln!("Bluetooth is not supported on this system");
-                    exit(1);
-                }
-                ManagerState::Unauthorized => {
-                    eprintln!("The app is not authorized to use Bluetooth on this system");
-                    exit(1);
-                }
-                ManagerState::PoweredOff => {
-                    eprintln!("Bluetooth is disabled, please enable it");
-                    // TODO(df): Clean up child handler
-                }
-                ManagerState::PoweredOn => {
-                    info!("bt is powered on, starting peripherals scan");
-                    //TODO(df): Run different type of peripherals search depending on params, for example, by service uuid
-                    //central.get_peripherals_with_services(&[SERVICE.parse().unwrap()])
-                    central.scan();
-                    self.next = Some(RootHandler::new());
-                }
-                _ => {}
-            }
-        };
-
-        if let Some(handler) = &mut self.next {
-            handler.handle_event(event, central);
-        }
-        // std::vec::Vec::retain is calling predicate with immutable borrow,
-        // so we have to use either retain_mut crate or interior mutability (via RefCell)
-        self.handlers.retain(|(f, sender)|
-            if let Some(result) = f(event) {
-                let mut sender = sender.borrow_mut();
-                sender.blocking_send(result).unwrap();
-                false
-            } else {
-                true
-            });
-    }
-
-    fn add_matcher(&mut self, sender: oneshot::Sender<CommandResult>, matcher: impl EventMatcher + Send + 'static) {
-        &self.handlers.push((Box::new(move |event| matcher.match_event(event)), RefCell::new(sender)));
-    }
-}
-
-struct RootHandler {
-    connected_peripherals: HashSet<Peripheral>,
-    peripherals: HashMap<Uuid, PeripheralInfo>,
-    sender: broadcast::Sender<Arc<Mutex<CentralEvent>>>,
-    receiver: broadcast::Receiver<Arc<Mutex<CentralEvent>>>,
-}
-
-impl RootHandler {
-    fn new() -> Self {
-        let (sender, receiver) = broadcast::channel(100);
-        Self {
-            sender,
-            receiver,
-            connected_peripherals: HashSet::new(),
-            peripherals: HashMap::new(),
-        }
-    }
-
-    fn find_device(&self, uuid_substr: String) -> Option<PeripheralInfo> {
-        let s = uuid_substr.as_str();
-        self.peripherals.iter().find_map(|(uuid, peripheral_info)|
-            if uuid.to_string().contains(s) { Some(peripheral_info.clone()) } else { None })
-    }
-
-    fn get_connected_device(&self, uuid: Uuid) -> Option<Peripheral> {
-        self.connected_peripherals.iter().find_map(|peripheral|
-            if uuid == peripheral.id() { Some(peripheral.clone()) } else { None })
-    }
-
 
     fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
-        //let event_to_send = event.clone();
-        debug!("handling_event, {:?}", event);
         match event {
+            CentralEvent::ManagerStateChanged { new_state } => {
+                self.state = *new_state;
+                match new_state {
+                    ManagerState::Unsupported => {
+                        eprintln!("Bluetooth is not supported on this system");
+                        exit(1);
+                    }
+                    ManagerState::Unauthorized => {
+                        eprintln!("The app is not authorized to use Bluetooth on this system");
+                        exit(1);
+                    }
+                    ManagerState::PoweredOff => {
+                        eprintln!("Bluetooth is disabled, please enable it");
+                        // TODO(df): Clean up child handler
+                    }
+                    ManagerState::PoweredOn => {
+                        info!("bt is powered on, starting peripherals scan");
+                        //TODO(df): Run different type of peripherals search depending on params, for example, by service uuid
+                        //central.get_peripherals_with_services(&[SERVICE.parse().unwrap()])
+                        central.scan();
+                    }
+                    _ => {}
+                }
+            }
             CentralEvent::PeripheralDiscovered {
                 peripheral,
                 advertisement_data,
@@ -521,6 +464,31 @@ impl RootHandler {
 
             _ => {}
         }
-        //self.sender.blocking_send(event_to_send).unwrap();
+
+        // std::vec::Vec::retain is calling predicate with immutable borrow,
+        // so we have to use either retain_mut crate or interior mutability (via RefCell)
+        self.handlers.retain(|(f, sender)|
+            if let Some(result) = f(event) {
+                let mut sender = sender.borrow_mut();
+                sender.blocking_send(result).unwrap();
+                false
+            } else {
+                true
+            });
+    }
+
+    fn add_matcher(&mut self, sender: oneshot::Sender<CommandResult>, matcher: impl EventMatcher + Send + 'static) {
+        &self.handlers.push((Box::new(move |event| matcher.match_event(event)), RefCell::new(sender)));
+    }
+
+    fn find_device(&self, uuid_substr: String) -> Option<PeripheralInfo> {
+        let s = uuid_substr.as_str();
+        self.peripherals.iter().find_map(|(uuid, peripheral_info)|
+            if uuid.to_string().contains(s) { Some(peripheral_info.clone()) } else { None })
+    }
+
+    fn get_connected_device(&self, uuid: Uuid) -> Option<Peripheral> {
+        self.connected_peripherals.iter().find_map(|peripheral|
+            if uuid == peripheral.id() { Some(peripheral.clone()) } else { None })
     }
 }

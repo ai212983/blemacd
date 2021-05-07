@@ -278,7 +278,7 @@ impl Reply {
 
 // Base logic taken from https://book.async.rs/tutorial/handling_disconnection.html#final-code
 async fn broker_loop(events: Receiver<PeerEvent>) {
-    let (_handler, controller) = HandlerHandle::new();
+    let (_handler, controller) = AsyncManager::new();
 
     let (disconnect_sender, mut disconnect_receiver) =
         mpsc::unbounded::<(u32, Receiver<String>, Arc<UnixStream>)>();
