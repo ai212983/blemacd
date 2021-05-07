@@ -1,6 +1,6 @@
 use std::collections::hash_map::{Entry, HashMap};
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use async_std::{
@@ -29,14 +29,6 @@ type Receiver<T> = mpsc::UnboundedReceiver<T>;
 enum Void {}
 
 const SOCKET_PATH: &str = "/tmp/blemacd.sock";
-
-const PERIPHERAL: &str = "fe3c678b-ab90-42ea-97d8-d13047ffdaa4";
-// local hue lamp. THIS ID WILL BE DIFFERENT FOR ANOTHER DEVICE!
-const PAIRING_SERVICE: &str = "932c32bd-0000-47a2-835a-a8d455b859dd";
-// on/off service for Philips Hue BLE
-const SERVICE: &str = "932c32bd-0000-47a2-835a-a8d455b859dd";
-// on/off service for Philips Hue BLE
-const CHARACTERISTIC: &str = "932c32bd-0002-47a2-835a-a8d455b859dd"; //  on/off characteristic
 
 const COMMAND_STATUS: &str = "status";
 const COMMAND_ALL_DEVICES: &str = "all";
@@ -111,7 +103,7 @@ impl Session {
 
     async fn process(&mut self, input: String) -> String {
         let mut results = vec![];
-        let mut input = &mut input.clone();
+        let input = &mut input.clone();
 
         loop {
             match self.get_next_command(input, &results) {

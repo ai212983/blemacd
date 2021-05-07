@@ -2,12 +2,11 @@ use core::fmt;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
-use std::pin::Pin;
 use std::process::exit;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use async_std::{prelude::*, stream, task, task::{Context, JoinHandle, Poll}};
+use async_std::{task, task::JoinHandle};
 use core_bluetooth::{*, central::{*,
                                   characteristic::Characteristic,
                                   peripheral::Peripheral,
@@ -16,17 +15,11 @@ use core_bluetooth::{*, central::{*,
 use core_bluetooth::central::characteristic::WriteKind;
 use core_bluetooth::error::Error;
 use futures::{select, StreamExt};
-use futures::future::Either;
 use log::*;
 use postage::{*, prelude::Sink};
 
-const PERIPHERAL: &str = "fe3c678b-ab90-42ea-97d8-d13047ffdaa4";
-// local hue lamp. THIS ID WILL BE DIFFERENT FOR ANOTHER DEVICE!
-const PAIRING_SERVICE: &str = "932c32bd-0000-47a2-835a-a8d455b859dd";
 // on/off service for Philips Hue BLE
 const SERVICE: &str = "932c32bd-0000-47a2-835a-a8d455b859dd";
-// on/off service for Philips Hue BLE
-const CHARACTERISTIC: &str = "932c32bd-0002-47a2-835a-a8d455b859dd"; //  on/off characteristic
 
 
 // --- Implementation draft ----------------------------------------------------
@@ -307,16 +300,15 @@ impl HandlerHandle {
     }
 }
 
-struct InitHandler<'a> {
+struct InitHandler {
     started_at: Instant,
     state: ManagerState,
-    next: Option<RootHandler<'a>>,
+    next: Option<RootHandler>,
     handlers: Vec<(Box<dyn Fn(&CentralEvent) -> Option<CommandResult> + Send>, RefCell<oneshot::Sender<CommandResult>>)>,
 }
 
-impl InitHandler<'_> {
-
-    fn execute(&mut self, command: Command, mut sender: oneshot::Sender<CommandResult>, central: &CentralManager) -> () {
+impl InitHandler {
+    fn execute(&mut self, command: Command, mut sender: oneshot::Sender<CommandResult>, central: &CentralManager) {
         match command {
             Command::GetStatus => {
                 sender.blocking_send(CommandResult::GetStatus(
@@ -326,26 +318,26 @@ impl InitHandler<'_> {
                     } else {
                         None
                     },
-                ))
+                )).unwrap()
             }
             Command::ListConnectedDevices => sender.blocking_send(CommandResult::ListConnectedDevices(
                 self.next.as_ref().expect("Not initialized").connected_peripherals.clone()
-            )),
+            )).unwrap(),
             Command::ListDevices => sender.blocking_send(CommandResult::ListDevices(
                 self.next.as_ref().expect("Not initialized").peripherals.clone()
-            )),
+            )).unwrap(),
             Command::FindPeripheral(uuid_substr) => {
                 info!("Finding peripheral with substring '{:?}'", uuid_substr);
                 let device = self.next.as_ref().expect("Not initialized").find_device(uuid_substr);
                 info!("Device search result '{:?}'", device);
-                sender.blocking_send(CommandResult::FindPeripheral(device))
+                sender.blocking_send(CommandResult::FindPeripheral(device)).unwrap()
             }
-            Command::ConnectToPeripheral(peripheral) => Ok({
+            Command::ConnectToPeripheral(peripheral) => {
                 let id = peripheral.id().clone();
                 let device = self.next.as_ref().expect("Not initialized").get_connected_device(id);
 
                 if let Some(peripheral) = device {
-                    sender.blocking_send(CommandResult::ConnectToPeripheral(peripheral.clone()));
+                    sender.blocking_send(CommandResult::ConnectToPeripheral(peripheral.clone())).unwrap();
                 } else {
                     &self.add_matcher(sender, PeripheralConnectedMatcher::new(
                         &peripheral,
@@ -354,24 +346,24 @@ impl InitHandler<'_> {
                         }));
                     central.connect(&peripheral);
                 }
-            }),
-            Command::FindService(peripheral, uuid_substr) => Ok({
+            },
+            Command::FindService(peripheral, uuid_substr) => {
                 &self.add_matcher(sender, ServicesDiscoveredMatcher::new(
                     &peripheral, uuid_substr,
                     |peripheral, service| {
                         CommandResult::FindService(peripheral.clone(), service)
                     }));
                 peripheral.discover_services();
-            }),
-            Command::FindCharacteristic(peripheral, service, uuid_substr) => Ok({
+            },
+            Command::FindCharacteristic(peripheral, service, uuid_substr) => {
                 &self.add_matcher(sender, CharacteristicsDiscoveredMatcher::new(
                     &peripheral, &service, uuid_substr,
                     |peripheral, characteristic| {
                         CommandResult::FindCharacteristic(peripheral.clone(), characteristic)
                     }));
                 peripheral.discover_characteristics(&service);
-            }),
-            Command::ReadCharacteristic(peripheral, characteristic) => Ok({
+            },
+            Command::ReadCharacteristic(peripheral, characteristic) => {
                 &self.add_matcher(sender, CharacteristicValueMatcher::new(
                     &peripheral, &characteristic,
                     |peripheral, characteristic, value| {
@@ -381,9 +373,8 @@ impl InitHandler<'_> {
                             if let Ok(value) = value { Some(value.clone()) } else { None })
                     }));
                 peripheral.read_characteristic(&characteristic);
-            }
-            ),
-            Command::WriteCharacteristic(peripheral, characteristic, data) => Ok({
+            },
+            Command::WriteCharacteristic(peripheral, characteristic, data) => {
                 &self.add_matcher(sender, WriteCharacteristicResultMatcher::new(
                     &peripheral, &characteristic, |peripheral, characteristic, result| {
                         CommandResult::WriteCharacteristic(peripheral.clone(), characteristic.clone(), result.clone())
@@ -391,7 +382,6 @@ impl InitHandler<'_> {
                 ));
                 peripheral.write_characteristic(&characteristic, &data, WriteKind::WithResponse);
             }
-            )
         };
     }
 
@@ -430,7 +420,7 @@ impl InitHandler<'_> {
         self.handlers.retain(|(f, sender)|
             if let Some(result) = f(event) {
                 let mut sender = sender.borrow_mut();
-                sender.blocking_send(result);
+                sender.blocking_send(result).unwrap();
                 false
             } else {
                 true
@@ -442,15 +432,14 @@ impl InitHandler<'_> {
     }
 }
 
-struct RootHandler<'a> {
+struct RootHandler {
     connected_peripherals: HashSet<Peripheral>,
     peripherals: HashMap<Uuid, PeripheralInfo>,
     sender: broadcast::Sender<Arc<Mutex<CentralEvent>>>,
     receiver: broadcast::Receiver<Arc<Mutex<CentralEvent>>>,
-    next: Option<DeviceHandler<'a>>,
 }
 
-impl RootHandler<'_> {
+impl RootHandler {
     fn new() -> Self {
         let (sender, receiver) = broadcast::channel(100);
         Self {
@@ -458,7 +447,6 @@ impl RootHandler<'_> {
             receiver,
             connected_peripherals: HashSet::new(),
             peripherals: HashMap::new(),
-            next: None,
         }
     }
 
@@ -534,71 +522,5 @@ impl RootHandler<'_> {
             _ => {}
         }
         //self.sender.blocking_send(event_to_send).unwrap();
-    }
-}
-
-struct DeviceHandler<'a> {
-    peripheral: &'a Peripheral,
-    services: HashMap<Uuid, Service>,
-}
-
-impl<'a> DeviceHandler<'a> {
-    fn new(peripheral: &'a Peripheral) -> Self {
-        Self {
-            peripheral,
-            services: HashMap::new(),
-        }
-    }
-
-    fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
-        match event {
-            CentralEvent::ServicesDiscovered {
-                peripheral,
-                services,
-            } => {
-                //println!("Services discovered for peripheral {}", peripheral.id());
-                if let Ok(services) = services {
-                    //println!("Starting characteristics discovery {}", services.len());
-                    for service in services {
-                        peripheral.discover_characteristics_with_uuids(
-                            &service,
-                            &[CHARACTERISTIC.parse().unwrap()],
-                        );
-                    }
-                }
-            }
-            CentralEvent::CharacteristicsDiscovered {
-                peripheral,
-                service: _,
-                characteristics,
-            } => {
-                match characteristics {
-                    Ok(chars) => {
-                        //info!("subscribing to characteristic {} of {}", chars[0].id(), peripheral.id());
-                        peripheral.subscribe(&chars[0]);
-                    }
-                    Err(err) => error!(
-                        "couldn't discover characteristics of {}: {}",
-                        peripheral.id(),
-                        err
-                    ),
-                }
-            }
-            CentralEvent::CharacteristicValue {
-                peripheral,
-                characteristic: _,
-                value,
-            } => {
-                if let Ok(value) = value {
-                    let now = chrono::Local::now().format("[%Y-%m-%d %H:%M:%S]");
-
-                    let t = i16::from_le_bytes([value[0], value[1]]) as f64 / 100.0;
-                    let rh = value[2];
-                    //println!("{} #{}: t = {} C, rh = {}%", now, peripheral.id(), t, rh);
-                }
-            }
-
-            _ => {}
-        }
     }
 }
