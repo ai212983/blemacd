@@ -82,6 +82,171 @@ pub enum Command {
     WriteCharacteristic(Peripheral, Characteristic, Vec<u8>),
 }
 
+trait EventMatcher {
+    fn match_event(&self, event: &CentralEvent) -> Option<CommandResult>;
+}
+
+struct PeripheralConnectedMatcher {
+    peripheral_id: Uuid,
+    handler: Box<dyn Fn(&Peripheral) -> CommandResult + Send + 'static>,
+}
+
+impl PeripheralConnectedMatcher {
+    fn new(peripheral: &Peripheral, handler: impl Fn(&Peripheral) -> CommandResult + Send + 'static) -> Self {
+        Self {
+            peripheral_id: peripheral.id(),
+            handler: Box::new(handler),
+        }
+    }
+}
+
+impl EventMatcher for PeripheralConnectedMatcher {
+    fn match_event(&self, event: &CentralEvent) -> Option<CommandResult> {
+        //TODO(df): handle CentralEvent::PeripheralConnectFailed { peripheral, error }
+        if let CentralEvent::PeripheralConnected { peripheral } = event {
+            if peripheral.id() == self.peripheral_id {
+                info!("connected peripheral {:?}", peripheral);
+                return Some((&self.handler)(&peripheral));
+            }
+        }
+        None
+    }
+}
+
+struct ServicesDiscoveredMatcher {
+    peripheral_id: Uuid,
+    uuid_substr: String,
+    handler: Box<dyn Fn(&Peripheral, Option<Service>) -> CommandResult + Send + 'static>,
+}
+
+impl ServicesDiscoveredMatcher {
+    fn new(peripheral: &Peripheral, uuid_substr: String,
+           handler: impl Fn(&Peripheral, Option<Service>) -> CommandResult + Send + 'static) -> Self {
+        Self {
+            peripheral_id: peripheral.id(),
+            uuid_substr,
+            handler: Box::new(handler),
+        }
+    }
+}
+
+impl EventMatcher for ServicesDiscoveredMatcher {
+    fn match_event(&self, event: &CentralEvent) -> Option<CommandResult> {
+        if let CentralEvent::ServicesDiscovered { peripheral, services } = event {
+            if peripheral.id() == self.peripheral_id {
+                return Some((&self.handler)
+                    (&peripheral,
+                     if let Ok(services) = services {
+                         services.iter()
+                             .find(|s| s.id().to_string().contains(&self.uuid_substr))
+                             .map(|s| s.clone())
+                     } else {
+                         None
+                     }));
+            }
+        }
+        None
+    }
+}
+
+struct CharacteristicValueMatcher {
+    peripheral_id: Uuid,
+    characteristic_id: Uuid,
+    handler: Box<dyn Fn(&Peripheral, &Characteristic, &Result<Vec<u8>, Error>) -> CommandResult + Send + 'static>,
+}
+
+impl CharacteristicValueMatcher {
+    fn new(peripheral: &Peripheral, characteristic: &Characteristic,
+           handler: impl Fn(&Peripheral, &Characteristic, &Result<Vec<u8>, Error>) -> CommandResult + Send + 'static) -> Self {
+        Self {
+            peripheral_id: peripheral.id(),
+            characteristic_id: characteristic.id(),
+            handler: Box::new(handler),
+        }
+    }
+}
+
+impl EventMatcher for CharacteristicValueMatcher {
+    fn match_event(&self, event: &CentralEvent) -> Option<CommandResult> {
+        if let CentralEvent::CharacteristicValue { peripheral, characteristic, value } = event {
+            if peripheral.id() == self.peripheral_id && characteristic.id() == self.characteristic_id {
+                return Some((&self.handler)(peripheral, characteristic, value));
+            }
+        }
+        None
+    }
+}
+
+
+struct CharacteristicsDiscoveredMatcher {
+    peripheral_id: Uuid,
+    service_id: Uuid,
+    uuid_substr: String,
+    handler: Box<dyn Fn(&Peripheral, Option<Characteristic>) -> CommandResult + Send + 'static>,
+}
+
+impl CharacteristicsDiscoveredMatcher {
+    fn new(peripheral: &Peripheral, service: &Service, uuid_substr: String,
+           handler: impl Fn(&Peripheral, Option<Characteristic>) -> CommandResult + Send + 'static) -> Self {
+        Self {
+            peripheral_id: peripheral.id(),
+            service_id: service.id(),
+            uuid_substr,
+            handler: Box::new(handler),
+        }
+    }
+}
+
+impl EventMatcher for CharacteristicsDiscoveredMatcher {
+    fn match_event(&self, event: &CentralEvent) -> Option<CommandResult> {
+        if let CentralEvent::CharacteristicsDiscovered { peripheral, service, characteristics } = event {
+            if peripheral.id() == self.peripheral_id && service.id() == self.service_id {
+                return Some((&self.handler)
+                    (peripheral,
+                     if let Ok(characteristics) = characteristics {
+                         characteristics.iter()
+                             .find(|s| s.id().to_string().contains(&self.uuid_substr))
+                             .map(|s| s.clone())
+                     } else {
+                         None
+                     },
+                    ));
+            }
+        }
+        None
+    }
+}
+
+
+struct WriteCharacteristicResultMatcher {
+    peripheral_id: Uuid,
+    characteristic_id: Uuid,
+    handler: Box<dyn Fn(&Peripheral, &Characteristic, &Result<(), Error>) -> CommandResult + Send + 'static>,
+}
+
+impl WriteCharacteristicResultMatcher {
+    fn new(peripheral: &Peripheral, characteristic: &Characteristic,
+           handler: impl Fn(&Peripheral, &Characteristic, &Result<(), Error>) -> CommandResult + Send + 'static) -> Self {
+        Self {
+            peripheral_id: peripheral.id(),
+            characteristic_id: characteristic.id(),
+            handler: Box::new(handler),
+        }
+    }
+}
+
+impl EventMatcher for WriteCharacteristicResultMatcher {
+    fn match_event(&self, event: &CentralEvent) -> Option<CommandResult> {
+        if let CentralEvent::WriteCharacteristicResult { peripheral, characteristic, result } = event {
+            if peripheral.id() == self.peripheral_id && characteristic.id() == self.characteristic_id {
+                return Some((&self.handler)(peripheral, characteristic, result));
+            }
+        }
+        None
+    }
+}
+
+
 pub struct Controller {
     sender: mpsc::Sender<(Command, oneshot::Sender<CommandResult>)>,
 }
@@ -150,6 +315,7 @@ struct InitHandler<'a> {
 }
 
 impl InitHandler<'_> {
+
     fn execute(&mut self, command: Command, mut sender: oneshot::Sender<CommandResult>, central: &CentralManager) -> () {
         match command {
             Command::GetStatus => {
@@ -181,95 +347,48 @@ impl InitHandler<'_> {
                 if let Some(peripheral) = device {
                     sender.blocking_send(CommandResult::ConnectToPeripheral(peripheral.clone()));
                 } else {
-                    // TODO(df): !!! Simplify pushing handlers!
-                    &self.handlers.push((Box::new(move |event| {
-                        //TODO(df): handle CentralEvent::PeripheralConnectFailed { peripheral, error }
-                        if let CentralEvent::PeripheralConnected { peripheral } = event {
-                            if peripheral.id() == id {
-                                //TODO(df): Check if thread is released after disconnect
-                                info!("connected peripheral {:?}", peripheral);
-                                return Some(CommandResult::ConnectToPeripheral(peripheral.clone()));
-                            }
-                        }
-                        None
-                    }), RefCell::new(sender)));
+                    &self.add_matcher(sender, PeripheralConnectedMatcher::new(
+                        &peripheral,
+                        |peripheral| {
+                            return CommandResult::ConnectToPeripheral(peripheral.clone());
+                        }));
                     central.connect(&peripheral);
                 }
             }),
             Command::FindService(peripheral, uuid_substr) => Ok({
-                let id = peripheral.id();
-                &self.handlers.push((Box::new(move |event| {
-                    if let CentralEvent::ServicesDiscovered { peripheral, services } = event {
-                        if peripheral.id() == id {
-                            info!("connected services: {:?}", services);
-                            return Some(CommandResult::FindService(
-                                peripheral.clone(),
-                                if let Ok(services) = services {
-                                    services.iter()
-                                        .find(|s| s.id().to_string().contains(&uuid_substr))
-                                        .map(|s| s.clone())
-                                } else {
-                                    None
-                                }));
-                        }
-                    }
-                    None
-                }), RefCell::new(sender)));
+                &self.add_matcher(sender, ServicesDiscoveredMatcher::new(
+                    &peripheral, uuid_substr,
+                    |peripheral, service| {
+                        CommandResult::FindService(peripheral.clone(), service)
+                    }));
                 peripheral.discover_services();
             }),
             Command::FindCharacteristic(peripheral, service, uuid_substr) => Ok({
-                let peripheral_id = peripheral.id();
-                let service_id = service.id();
-                &self.handlers.push((Box::new(move |event| {
-                    if let CentralEvent::CharacteristicsDiscovered { peripheral, service, characteristics } = event {
-                        if peripheral.id() == peripheral_id && service.id() == service_id {
-                            info!("connected characteristics: {:?}", characteristics);
-                            return Some(CommandResult::FindCharacteristic(
-                                peripheral.clone(),
-                                if let Ok(characteristics) = characteristics {
-                                    characteristics.iter()
-                                        .find(|s| s.id().to_string().contains(&uuid_substr))
-                                        .map(|s| s.clone())
-                                } else {
-                                    None
-                                }));
-                        }
-                    }
-                    None
-                }), RefCell::new(sender)));
+                &self.add_matcher(sender, CharacteristicsDiscoveredMatcher::new(
+                    &peripheral, &service, uuid_substr,
+                    |peripheral, characteristic| {
+                        CommandResult::FindCharacteristic(peripheral.clone(), characteristic)
+                    }));
                 peripheral.discover_characteristics(&service);
             }),
             Command::ReadCharacteristic(peripheral, characteristic) => Ok({
-                let peripheral_id = peripheral.id();
-                let characteristic_id = characteristic.id();
-                &self.handlers.push((Box::new(move |event| {
-                    if let CentralEvent::CharacteristicValue { peripheral, characteristic, value } = event {
-                        if peripheral.id() == peripheral_id && characteristic.id() == characteristic_id {
-                            info!("read characteristic {:?}: {:?}", characteristic_id, value);
-                            return Some(CommandResult::ReadCharacteristic(
-                                peripheral.clone(),
-                                characteristic.clone(),
-                                if let Ok(value) = value { Some(value.clone()) } else { None }));
-                        }
-                    }
-                    None
-                }), RefCell::new(sender)));
+                &self.add_matcher(sender, CharacteristicValueMatcher::new(
+                    &peripheral, &characteristic,
+                    |peripheral, characteristic, value| {
+                        CommandResult::ReadCharacteristic(
+                            peripheral.clone(),
+                            characteristic.clone(),
+                            if let Ok(value) = value { Some(value.clone()) } else { None })
+                    }));
                 peripheral.read_characteristic(&characteristic);
             }
             ),
             Command::WriteCharacteristic(peripheral, characteristic, data) => Ok({
-                let peripheral_id = peripheral.id();
-                let characteristic_id = characteristic.id();
-                &self.handlers.push((Box::new(move |event| {
-                    if let CentralEvent::WriteCharacteristicResult { peripheral, characteristic, result } = event {
-                        if peripheral.id() == peripheral_id && characteristic.id() == characteristic_id {
-                            info!("write characteristic result {:?}: {:?}", characteristic_id, result);
-                            return Some(CommandResult::WriteCharacteristic(
-                                peripheral.clone(), characteristic.clone(), result.clone()));
-                        }
-                    }
-                    None
-                }), RefCell::new(sender)));
+                &self.add_matcher(sender, WriteCharacteristicResultMatcher::new(
+                    &peripheral, &characteristic, |peripheral, characteristic, result| {
+                        CommandResult::WriteCharacteristic(peripheral.clone(), characteristic.clone(), result.clone())
+                    },
+                ));
                 peripheral.write_characteristic(&characteristic, &data, WriteKind::WithResponse);
             }
             )
@@ -316,6 +435,10 @@ impl InitHandler<'_> {
             } else {
                 true
             });
+    }
+
+    fn add_matcher(&mut self, sender: oneshot::Sender<CommandResult>, matcher: impl EventMatcher + Send + 'static) {
+        &self.handlers.push((Box::new(move |event| matcher.match_event(event)), RefCell::new(sender)));
     }
 }
 
