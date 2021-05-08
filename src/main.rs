@@ -17,7 +17,9 @@ use futures::{
     stream::Fuse,
     StreamExt,
 };
+use lazy_static::lazy_static;
 use log::*;
+use regex::Regex;
 
 use blemacd::handlers::*;
 
@@ -115,7 +117,7 @@ impl Session {
 
     fn get_next_command(&mut self, input: &mut String, results: &Vec<CommandResult>) -> Either<Command, String> {
         if results.len() == 0 {
-            if let Some(token) = consume_token(input) {
+            if let InputToken::Address(token) = consume_token(input) {
                 Either::Left(match token.as_str() {
                     COMMAND_STATUS => Command::GetStatus,
                     COMMAND_ALL_DEVICES => Command::ListDevices,
@@ -159,7 +161,7 @@ impl Session {
                         if input.is_empty() {
                             Either::Right(format!("connected to peripheral {:?}, input: {:?}", peripheral, input))
                         } else {
-                            if let Some(token) = consume_token(input) {
+                            if let InputToken::Address(token) = consume_token(input) {
                                 info!("Connected to peripheral, searching for Service {:?}", input);
                                 Either::Left(Command::FindService(peripheral.clone(), token.to_string()))
                             } else {
@@ -169,7 +171,7 @@ impl Session {
                     }
                     CommandResult::FindService(peripheral, service) => {
                         if let Some(service) = service {
-                            if let Some(token) = consume_token(input) {
+                            if let InputToken::Address(token) = consume_token(input) {
                                 info!("service found: {:?}, searching for Characteristic: {:?}", service, token);
                                 Either::Left(Command::FindCharacteristic(peripheral.clone(), service.clone(), token.to_string()))
                             } else {
@@ -182,7 +184,7 @@ impl Session {
                     CommandResult::FindCharacteristic(peripheral, characteristic) => {
                         if let Some(characteristic) = characteristic {
                             info!("characteristic found: {:?}", characteristic);
-                            Either::Left(if let Some(token) = consume_token(input) {
+                            Either::Left(if let InputToken::Address(token) = consume_token(input) {
                                 if token == "!" {
                                     self.pending_changes.insert(
                                         characteristic.id(),
@@ -456,28 +458,140 @@ pub fn main() {
 }
 
 // -------
+#[derive(PartialEq, Debug)]
+enum InputToken {
+    Address(String),
+    Range(Option<usize>, Option<usize>),
+    None,
+}
 
-fn consume_token(input: &mut String) -> Option<String> {
-    if let Some(token) = input.split_terminator('/').next().map(String::from) {
-        let mut i = token.len();
-        if input.len() > i {
-            i = i + 1;
+fn to_int(m: Option<regex::Match>) -> Option<usize> {
+    if let Some(m) = m {
+        if !m.range().is_empty() {
+            return m.as_str().parse::<usize>().ok();
         }
-        *input = input.get(i..).unwrap().to_string();
-        Some(token.to_string())
+    }
+    None
+}
+
+fn consume_token(input: &mut String) -> InputToken {
+    lazy_static! {
+        static ref RE: Regex = Regex::new(r"^(?:/)?(?:([^/\[\s]+)|(?:\[(\d*)(?:..(\d*))?\]))(?:/)?").unwrap();
+    }
+
+    let mut result = None;
+    for cap in RE.captures_iter(input) {
+        if let Some(addr) = cap.get(1) {
+            if addr.range().is_empty() {
+                continue;
+            } else {
+                result = Some((cap.get(0).unwrap().end(), InputToken::Address(addr.as_str().to_string())));
+                break;
+            }
+        }
+        let start = cap.get(2);
+        let end = cap.get(3);
+        if start.is_some() || end.is_some() {
+            result = Some((
+                cap.get(0).unwrap().end(),
+                if let Some(s) = to_int(start) {
+                    InputToken::Range(
+                        Some(s),
+                        if let Some(e) = end {
+                            e.as_str().parse::<usize>().ok()
+                        } else {
+                            Some(s + 1)
+                        })
+                } else {
+                    InputToken::Range(None, to_int(end))
+                }));
+            break;
+        }
+    };
+
+    if let Some((idx, token)) = result {
+        *input = input.get(idx..).unwrap().to_string();
+        token
     } else {
-        None
+        InputToken::None
     }
 }
 
-#[test]
-fn consume_token_test() {
-    let mut input = &mut "212/32/988".to_string();
-    assert_eq!(consume_token(input), Some("212".to_string()));
-    assert_eq!(input, "32/988");
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let mut input = &mut "212".to_string();
-    assert_eq!(consume_token(input), Some("212".to_string()));
-    assert_eq!(input, "");
-    assert_eq!(consume_token(input), None);
+    #[test]
+    fn address_token() {
+        let mut input = &mut "/212[51..75]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
+        assert_eq!(input, "[51..75]/32");
+
+        let mut input = &mut "212[51..75]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
+        assert_eq!(input, "[51..75]/32");
+
+        let mut input = &mut "212/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
+        assert_eq!(input, "32");
+
+        let mut input = &mut "212".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
+        assert_eq!(input, "");
+    }
+
+    #[test]
+    fn range_token() {
+        let mut input = &mut "[51..75]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Range(Some(51), Some(75)));
+        assert_eq!(input, "32");
+
+        let mut input = &mut "/[51..75]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Range(Some(51), Some(75)));
+        assert_eq!(input, "32");
+
+        let mut input = &mut "/[51..]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Range(Some(51), None));
+        assert_eq!(input, "32");
+
+        let mut input = &mut "/[..75]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Range(None, Some(75)));
+        assert_eq!(input, "32");
+
+        let mut input = &mut "/[6]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Range(Some(6), Some(7)));
+        assert_eq!(input, "32");
+
+        let mut input = &mut "/[..]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Range(None, None));
+        assert_eq!(input, "32");
+
+        let mut input = &mut "/[]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Range(None, None));
+        assert_eq!(input, "32");
+
+        let mut input = &mut "212/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
+        assert_eq!(input, "32");
+
+        let mut input = &mut "212".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
+        assert_eq!(input, "");
+    }
+
+    #[test]
+    fn consume_source_string() {
+        let mut input = &mut "/32/988".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("32".to_string()));
+        assert_eq!(input, "988");
+
+        let mut input = &mut "212/32/988".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
+        assert_eq!(input, "32/988");
+
+        let mut input = &mut "212".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
+        assert_eq!(input, "");
+        assert_eq!(consume_token(input), InputToken::None);
+    }
 }
