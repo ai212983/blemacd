@@ -89,13 +89,15 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
 struct Session {
     controller: Controller,
     pending_changes: HashMap<Uuid, fn(u8) -> u8>,
+    ranges: HashMap<Uuid, (Option<usize>, Option<usize>)>,
 }
 
 impl Session {
     fn new(controller: Controller) -> Self {
         Self {
             controller,
-            pending_changes: HashMap::new(),
+            pending_changes: Default::default(),
+            ranges: Default::default(),
         }
     }
 
@@ -117,7 +119,7 @@ impl Session {
 
     fn get_next_command(&mut self, input: &mut String, results: &Vec<CommandResult>) -> Either<Command, String> {
         if results.len() == 0 {
-            if let InputToken::Address(token) = consume_token(input) {
+            if let InputToken::Address(token, _) = consume_token(input) {
                 Either::Left(match token.as_str() {
                     COMMAND_STATUS => Command::GetStatus,
                     COMMAND_ALL_DEVICES => Command::ListDevices,
@@ -161,7 +163,7 @@ impl Session {
                         if input.is_empty() {
                             Either::Right(format!("connected to peripheral {:?}, input: {:?}", peripheral, input))
                         } else {
-                            if let InputToken::Address(token) = consume_token(input) {
+                            if let InputToken::Address(token, _) = consume_token(input) {
                                 info!("Connected to peripheral, searching for Service {:?}", input);
                                 Either::Left(Command::FindService(peripheral.clone(), token.to_string()))
                             } else {
@@ -171,7 +173,7 @@ impl Session {
                     }
                     CommandResult::FindService(peripheral, service) => {
                         if let Some(service) = service {
-                            if let InputToken::Address(token) = consume_token(input) {
+                            if let InputToken::Address(token, _) = consume_token(input) {
                                 info!("service found: {:?}, searching for Characteristic: {:?}", service, token);
                                 Either::Left(Command::FindCharacteristic(peripheral.clone(), service.clone(), token.to_string()))
                             } else {
@@ -184,22 +186,21 @@ impl Session {
                     CommandResult::FindCharacteristic(peripheral, characteristic) => {
                         if let Some(characteristic) = characteristic {
                             info!("characteristic found: {:?}", characteristic);
-                            Either::Left(if let InputToken::Address(token) = consume_token(input) {
-                                if token == "!" {
-                                    self.pending_changes.insert(
-                                        characteristic.id(),
-                                        |v| if v == 0 { 1 } else { 0 },
-                                    );
-                                    Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
-                                } else {
-                                    //TODO(df): Add proper multi-byte parsing
-                                    Command::WriteCharacteristic(
-                                        peripheral.clone(), characteristic.clone(), vec![token.parse().unwrap()],
-                                    )
-                                }
-                            } else {
-                                Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
-                            })
+                            Either::Left(
+                                match consume_token(input) {
+                                    InputToken::Negation => {
+                                        self.pending_changes.insert(
+                                            characteristic.id(),
+                                            |v| if v == 0 { 1 } else { 0 },
+                                        );
+                                        Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
+                                    }
+                                    InputToken::Address(token, _) =>
+                                        Command::WriteCharacteristic(
+                                            peripheral.clone(), characteristic.clone(), vec![token.parse().unwrap()],
+                                        ),
+                                    _ => Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
+                                })
                         } else {
                             Either::Right("characteristic not found".to_string())
                         }
@@ -279,7 +280,7 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
 
     let (disconnect_sender, mut disconnect_receiver) =
         mpsc::unbounded::<(u32, Receiver<String>, Arc<UnixStream>)>();
-    let mut peers: HashMap<u32, Sender<String>> = HashMap::new();
+    let mut peers: HashMap<u32, Sender<String>> = Default::default();
     let mut events = events.fuse();
 
     loop {
@@ -460,8 +461,8 @@ pub fn main() {
 // -------
 #[derive(PartialEq, Debug)]
 enum InputToken {
-    Address(String),
-    Range(Option<usize>, Option<usize>),
+    Address(String, Option<(Option<usize>, Option<usize>)>),
+    Negation,
     None,
 }
 
@@ -476,45 +477,42 @@ fn to_int(m: Option<regex::Match>) -> Option<usize> {
 
 fn consume_token(input: &mut String) -> InputToken {
     lazy_static! {
-        static ref RE: Regex = Regex::new(r"^(?:/)?(?:([^/\[\s]+)|(?:\[(\d*)(?:..(\d*))?\]))(?:/)?").unwrap();
+        static ref RE: Regex = Regex::new(r"^(?:/)?([^/\[\s]+)(?:\[(\d*)(?:..(\d*))?\])?(?:/)?").unwrap();
     }
 
-    let mut result = None;
-    for cap in RE.captures_iter(input) {
+    let cloned = input.clone();
+    for cap in RE.captures_iter(cloned.as_str()) {
         if let Some(addr) = cap.get(1) {
             if addr.range().is_empty() {
                 continue;
             } else {
-                result = Some((cap.get(0).unwrap().end(), InputToken::Address(addr.as_str().to_string())));
-                break;
-            }
-        }
-        let start = cap.get(2);
-        let end = cap.get(3);
-        if start.is_some() || end.is_some() {
-            result = Some((
-                cap.get(0).unwrap().end(),
-                if let Some(s) = to_int(start) {
-                    InputToken::Range(
-                        Some(s),
-                        if let Some(e) = end {
-                            e.as_str().parse::<usize>().ok()
+                *input = input.get(cap.get(0).unwrap().end()..).unwrap().to_string();
+                return match addr.as_str() {
+                    "!" => InputToken::Negation,
+                    _ => InputToken::Address(addr.as_str().to_string(), {
+                        let start = cap.get(2);
+                        let end = cap.get(3);
+                        if start.is_some() || end.is_some() {
+                            Some(if let Some(s) = to_int(start) {
+                                (Some(s),
+                                 if let Some(e) = end {
+                                     e.as_str().parse::<usize>().ok()
+                                 } else {
+                                     Some(s + 1)
+                                 })
+                            } else {
+                                (None, to_int(end))
+                            })
                         } else {
-                            Some(s + 1)
-                        })
-                } else {
-                    InputToken::Range(None, to_int(end))
-                }));
-            break;
+                            None
+                        }
+                    })
+                };
+            }
         }
     };
 
-    if let Some((idx, token)) = result {
-        *input = input.get(idx..).unwrap().to_string();
-        token
-    } else {
-        InputToken::None
-    }
+    InputToken::None
 }
 
 #[cfg(test)]
@@ -522,75 +520,78 @@ mod tests {
     use super::*;
 
     #[test]
+    fn negation_token() {
+        let mut input = &mut "!/212[51..75]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Negation);
+        assert_eq!(input, "212[51..75]/32");
+
+        let mut input = &mut "!/".to_string();
+        assert_eq!(consume_token(input), InputToken::Negation);
+        assert_eq!(input, "");
+    }
+
+    #[test]
     fn address_token() {
         let mut input = &mut "/212[51..75]/32".to_string();
-        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
-        assert_eq!(input, "[51..75]/32");
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string(), Some((Some(51), Some(75)))));
+        assert_eq!(input, "32");
 
         let mut input = &mut "212[51..75]/32".to_string();
-        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
-        assert_eq!(input, "[51..75]/32");
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string(), Some((Some(51), Some(75)))));
+        assert_eq!(input, "32");
 
         let mut input = &mut "212/32".to_string();
-        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string(), None));
         assert_eq!(input, "32");
 
         let mut input = &mut "212".to_string();
-        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string(), None));
         assert_eq!(input, "");
     }
 
     #[test]
     fn range_token() {
-        let mut input = &mut "[51..75]/32".to_string();
-        assert_eq!(consume_token(input), InputToken::Range(Some(51), Some(75)));
+        let mut input = &mut "1[51..75]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("1".to_string(), Some((Some(51), Some(75)))));
         assert_eq!(input, "32");
 
-        let mut input = &mut "/[51..75]/32".to_string();
-        assert_eq!(consume_token(input), InputToken::Range(Some(51), Some(75)));
+        let mut input = &mut "/2[51..75]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("2".to_string(), Some((Some(51), Some(75)))));
         assert_eq!(input, "32");
 
-        let mut input = &mut "/[51..]/32".to_string();
-        assert_eq!(consume_token(input), InputToken::Range(Some(51), None));
+        let mut input = &mut "/3[51..]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("3".to_string(), Some((Some(51), None))));
         assert_eq!(input, "32");
 
-        let mut input = &mut "/[..75]/32".to_string();
-        assert_eq!(consume_token(input), InputToken::Range(None, Some(75)));
+        let mut input = &mut "/4[..75]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("4".to_string(), Some((None, Some(75)))));
         assert_eq!(input, "32");
 
-        let mut input = &mut "/[6]/32".to_string();
-        assert_eq!(consume_token(input), InputToken::Range(Some(6), Some(7)));
+        let mut input = &mut "/5[6]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("5".to_string(), Some((Some(6), Some(7)))));
         assert_eq!(input, "32");
 
-        let mut input = &mut "/[..]/32".to_string();
-        assert_eq!(consume_token(input), InputToken::Range(None, None));
+        let mut input = &mut "/6[..]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("6".to_string(), Some((None, None))));
         assert_eq!(input, "32");
 
-        let mut input = &mut "/[]/32".to_string();
-        assert_eq!(consume_token(input), InputToken::Range(None, None));
+        let mut input = &mut "/7[]/32".to_string();
+        assert_eq!(consume_token(input), InputToken::Address("7".to_string(), Some((None, None))));
         assert_eq!(input, "32");
-
-        let mut input = &mut "212/32".to_string();
-        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
-        assert_eq!(input, "32");
-
-        let mut input = &mut "212".to_string();
-        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
-        assert_eq!(input, "");
     }
 
     #[test]
     fn consume_source_string() {
         let mut input = &mut "/32/988".to_string();
-        assert_eq!(consume_token(input), InputToken::Address("32".to_string()));
+        assert_eq!(consume_token(input), InputToken::Address("32".to_string(), None));
         assert_eq!(input, "988");
 
         let mut input = &mut "212/32/988".to_string();
-        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string(), None));
         assert_eq!(input, "32/988");
 
         let mut input = &mut "212".to_string();
-        assert_eq!(consume_token(input), InputToken::Address("212".to_string()));
+        assert_eq!(consume_token(input), InputToken::Address("212".to_string(), None));
         assert_eq!(input, "");
         assert_eq!(consume_token(input), InputToken::None);
     }

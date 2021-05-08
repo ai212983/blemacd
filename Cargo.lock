@@ -6,7 +6,7 @@ version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e37cfd5e7657ada45f742d6e99ca5788580b5c529dc78faf11ece6dc702656f"
 dependencies = [
-    "memchr",
+ "memchr",
 ]
 
 [[package]]
@@ -179,19 +179,19 @@ checksum = "cf1de2fe8c75bc145a2f577add951f8134889b4795d47466a54a5c846d691693"
 name = "blemacd"
 version = "0.1.0"
 dependencies = [
-    "async-macros",
-    "async-std",
-    "chrono",
-    "clap",
-    "core_bluetooth",
-    "env_logger",
-    "futures",
-    "humantime",
-    "lazy_static",
-    "log",
-    "postage",
-    "regex",
-    "uuid",
+ "async-macros",
+ "async-std",
+ "chrono",
+ "clap",
+ "core_bluetooth",
+ "env_logger",
+ "futures",
+ "humantime",
+ "lazy_static",
+ "log",
+ "postage",
+ "regex",
+ "uuid",
 ]
 
 [[package]]
@@ -805,9 +805,9 @@ version = "1.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d07a8629359eb56f1e2fb1652bb04212c072a87ba68546a04065d525673ac461"
 dependencies = [
-    "aho-corasick",
-    "memchr",
-    "regex-syntax",
+ "aho-corasick",
+ "memchr",
+ "regex-syntax",
 ]
 
 [[package]]
