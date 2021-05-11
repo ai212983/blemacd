@@ -90,6 +90,7 @@ struct Session {
     controller: Controller,
     pending_changes: HashMap<Uuid, fn(u8) -> u8>,
     ranges: HashMap<Uuid, (Option<usize>, Option<usize>)>,
+    pending_ranges: HashMap<uuid::Uuid, (Option<usize>, Option<usize>)>,
 }
 
 impl Session {
@@ -98,6 +99,7 @@ impl Session {
             controller,
             pending_changes: Default::default(),
             ranges: Default::default(),
+            pending_ranges: Default::default(),
         }
     }
 
@@ -173,9 +175,13 @@ impl Session {
                     }
                     CommandResult::FindService(peripheral, service) => {
                         if let Some(service) = service {
-                            if let InputToken::Address(token, _) = consume_token(input) {
+                            if let InputToken::Address(token, range) = consume_token(input) {
                                 info!("service found: {:?}, searching for Characteristic: {:?}", service, token);
-                                Either::Left(Command::FindCharacteristic(peripheral.clone(), service.clone(), token.to_string()))
+                                let uuid = uuid::Uuid::new_v4();
+                                if let Some(range) = range {
+                                    self.pending_ranges.insert(uuid, range);
+                                }
+                                Either::Left(Command::FindCharacteristic(peripheral.clone(), service.clone(), token.to_string(), uuid))
                             } else {
                                 Either::Right(format!("service found: {:?}", service))
                             }
@@ -183,10 +189,14 @@ impl Session {
                             Either::Right("service not found".to_string())
                         }
                     }
-                    CommandResult::FindCharacteristic(peripheral, characteristic) => {
+                    CommandResult::FindCharacteristic(peripheral, characteristic, uuid) => {
                         if let Some(characteristic) = characteristic {
                             info!("characteristic found: {:?}", characteristic);
-                            Either::Left(
+                            let pending_range = self.pending_ranges.remove(uuid);
+                            Either::Left({
+                                if let Some(range) = pending_range {
+                                    self.ranges.insert(characteristic.id(), range);
+                                };
                                 match consume_token(input) {
                                     InputToken::Negation => {
                                         self.pending_changes.insert(
@@ -200,20 +210,23 @@ impl Session {
                                             peripheral.clone(), characteristic.clone(), vec![token.parse().unwrap()],
                                         ),
                                     _ => Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
-                                })
+                                }
+                            })
                         } else {
                             Either::Right("characteristic not found".to_string())
                         }
                     }
                     CommandResult::ReadCharacteristic(peripheral, characteristic, value) => {
                         if let Some(value) = value {
-                            if let Some((_, change)) = self.pending_changes.remove_entry(&characteristic.id()) {
+                            let id = &characteristic.id();
+                            let range = self.ranges.remove(id);
+                            if let Some((_, change)) = self.pending_changes.remove_entry(id) {
                                 info!("characteristic read: {:?}, now updating", characteristic);
                                 Either::Left(Command::WriteCharacteristic(
                                     peripheral.clone(), characteristic.clone(), vec![change(value[0])]))
                             } else {
-                                info!("characteristic read: {:?}", characteristic);
-                                Either::Right(value.iter().map(|v| format!("{:02X?}", v)).collect::<Vec<String>>().join(" "))
+                                info!("characteristic read: {:?} (range {:?})", characteristic, range);
+                                Either::Right(get_slice(value, range).iter().map(|v| format!("{:02X?}", v)).collect::<Vec<String>>().join(" "))
                             }
                         } else {
                             Either::Right("characteristic read failed".to_string())
@@ -513,6 +526,18 @@ fn consume_token(input: &mut String) -> InputToken {
     };
 
     InputToken::None
+}
+
+fn get_slice(vector: &Vec<u8>, slice: Option<(Option<usize>, Option<usize>)>) -> &[u8] {
+    match slice {
+        None => vector,
+        Some(range) => match range {
+            (Some(start), Some(end)) => &vector[start..end],
+            (Some(start), None) => &vector[start..],
+            (None, Some(end)) => &vector[..end],
+            (None, None) => &vector[..],
+        }
+    }
 }
 
 #[cfg(test)]

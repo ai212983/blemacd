@@ -6,15 +6,17 @@ use std::process::exit;
 use std::time::{Duration, Instant};
 
 use async_std::{task, task::JoinHandle};
-use core_bluetooth::{*, central::{*,
-                                  characteristic::{Characteristic, WriteKind},
-                                  peripheral::Peripheral,
-                                  service::Service},
+use core_bluetooth::{central::{*,
+                               characteristic::{Characteristic, WriteKind},
+                               peripheral::Peripheral,
+                               service::Service},
                      error::Error,
-                     uuid::Uuid};
+                     ManagerState,
+                     uuid::Uuid as BLE_Uuid};
 use futures::{select, StreamExt};
 use log::*;
 use postage::{*, prelude::Sink};
+use uuid::Uuid;
 
 // on/off service for Philips Hue BLE
 const SERVICE: &str = "932c32bd-0000-47a2-835a-a8d455b859dd";
@@ -52,11 +54,11 @@ impl fmt::Display for PeripheralInfo {
 pub enum CommandResult {
     GetStatus(Duration, Option<(usize, usize)>),
     ListConnectedDevices(HashSet<Peripheral>),
-    ListDevices(HashMap<Uuid, PeripheralInfo>),
+    ListDevices(HashMap<BLE_Uuid, PeripheralInfo>),
     FindPeripheral(Option<PeripheralInfo>),
     ConnectToPeripheral(Peripheral),
     FindService(Peripheral, Option<Service>),
-    FindCharacteristic(Peripheral, Option<Characteristic>),
+    FindCharacteristic(Peripheral, Option<Characteristic>, Uuid),
     ReadCharacteristic(Peripheral, Characteristic, Option<Vec<u8>>),
     WriteCharacteristic(Peripheral, Characteristic, Result<(), Error>),
 }
@@ -68,7 +70,7 @@ pub enum Command {
     FindPeripheral(String),
     ConnectToPeripheral(Peripheral),
     FindService(Peripheral, String),
-    FindCharacteristic(Peripheral, Service, String),
+    FindCharacteristic(Peripheral, Service, String, Uuid),
     ReadCharacteristic(Peripheral, Characteristic),
     WriteCharacteristic(Peripheral, Characteristic, Vec<u8>),
 }
@@ -78,7 +80,7 @@ trait EventMatcher {
 }
 
 struct PeripheralConnectedMatcher {
-    peripheral_id: Uuid,
+    peripheral_id: BLE_Uuid,
     handler: Box<dyn Fn(&Peripheral) -> CommandResult + Send + 'static>,
 }
 
@@ -105,7 +107,7 @@ impl EventMatcher for PeripheralConnectedMatcher {
 }
 
 struct ServicesDiscoveredMatcher {
-    peripheral_id: Uuid,
+    peripheral_id: BLE_Uuid,
     uuid_substr: String,
     handler: Box<dyn Fn(&Peripheral, Option<Service>) -> CommandResult + Send + 'static>,
 }
@@ -141,8 +143,8 @@ impl EventMatcher for ServicesDiscoveredMatcher {
 }
 
 struct CharacteristicValueMatcher {
-    peripheral_id: Uuid,
-    characteristic_id: Uuid,
+    peripheral_id: BLE_Uuid,
+    characteristic_id: BLE_Uuid,
     handler: Box<dyn Fn(&Peripheral, &Characteristic, &Result<Vec<u8>, Error>) -> CommandResult + Send + 'static>,
 }
 
@@ -170,8 +172,8 @@ impl EventMatcher for CharacteristicValueMatcher {
 
 
 struct CharacteristicsDiscoveredMatcher {
-    peripheral_id: Uuid,
-    service_id: Uuid,
+    peripheral_id: BLE_Uuid,
+    service_id: BLE_Uuid,
     uuid_substr: String,
     handler: Box<dyn Fn(&Peripheral, Option<Characteristic>) -> CommandResult + Send + 'static>,
 }
@@ -211,8 +213,8 @@ impl EventMatcher for CharacteristicsDiscoveredMatcher {
 
 
 struct WriteCharacteristicResultMatcher {
-    peripheral_id: Uuid,
-    characteristic_id: Uuid,
+    peripheral_id: BLE_Uuid,
+    characteristic_id: BLE_Uuid,
     handler: Box<dyn Fn(&Peripheral, &Characteristic, &Result<(), Error>) -> CommandResult + Send + 'static>,
 }
 
@@ -305,7 +307,7 @@ struct InnerHandler {
     state: ManagerState,
     handlers: Vec<(Box<dyn Fn(&CentralEvent) -> Option<CommandResult> + Send>, RefCell<oneshot::Sender<CommandResult>>)>,
     connected_peripherals: HashSet<Peripheral>,
-    peripherals: HashMap<Uuid, PeripheralInfo>,
+    peripherals: HashMap<BLE_Uuid, PeripheralInfo>,
 }
 
 impl InnerHandler {
@@ -352,11 +354,11 @@ impl InnerHandler {
                     }));
                 peripheral.discover_services();
             }
-            Command::FindCharacteristic(peripheral, service, uuid_substr) => {
+            Command::FindCharacteristic(peripheral, service, uuid_substr, correlation_id) => {
                 &self.add_matcher(sender, CharacteristicsDiscoveredMatcher::new(
                     &peripheral, &service, uuid_substr,
-                    |peripheral, characteristic| {
-                        CommandResult::FindCharacteristic(peripheral.clone(), characteristic)
+                    move |peripheral, characteristic| {
+                        CommandResult::FindCharacteristic(peripheral.clone(), characteristic, correlation_id)
                     }));
                 peripheral.discover_characteristics(&service);
             }
@@ -487,7 +489,7 @@ impl InnerHandler {
             if uuid.to_string().contains(s) { Some(peripheral_info.clone()) } else { None })
     }
 
-    fn get_connected_device(&self, uuid: Uuid) -> Option<Peripheral> {
+    fn get_connected_device(&self, uuid: BLE_Uuid) -> Option<Peripheral> {
         self.connected_peripherals.iter().find_map(|peripheral|
             if uuid == peripheral.id() { Some(peripheral.clone()) } else { None })
     }
