@@ -1,4 +1,5 @@
 use std::collections::hash_map::{Entry, HashMap};
+use std::convert::TryInto;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -88,7 +89,7 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
 
 struct Session {
     controller: Controller,
-    pending_changes: HashMap<Uuid, fn(u8) -> u8>,
+    pending_changes: HashMap<Uuid, fn(u128) -> u128>,
     ranges: HashMap<Uuid, (Option<usize>, Option<usize>)>,
     pending_ranges: HashMap<uuid::Uuid, (Option<usize>, Option<usize>)>,
 }
@@ -205,10 +206,19 @@ impl Session {
                                         );
                                         Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
                                     }
-                                    InputToken::Address(token, _) =>
-                                        Command::WriteCharacteristic(
-                                            peripheral.clone(), characteristic.clone(), vec![token.parse().unwrap()],
-                                        ),
+                                    InputToken::Address(token, _) => {
+                                        if pending_range.is_some() {
+                                            self.pending_changes.insert(
+                                                characteristic.id(),
+                                                |v| v,
+                                            );
+                                            Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
+                                        } else {
+                                            Command::WriteCharacteristic(
+                                                peripheral.clone(), characteristic.clone(), hex::decode(token).unwrap(),
+                                            )
+                                        }
+                                    }
                                     _ => Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
                                 }
                             })
@@ -220,13 +230,34 @@ impl Session {
                         if let Some(value) = value {
                             let id = &characteristic.id();
                             let range = self.ranges.remove(id);
+                            let sliced_value = get_slice(value, range);
                             if let Some((_, change)) = self.pending_changes.remove_entry(id) {
                                 info!("characteristic read: {:?}, now updating", characteristic);
-                                Either::Left(Command::WriteCharacteristic(
-                                    peripheral.clone(), characteristic.clone(), vec![change(value[0])]))
+                                Either::Left({
+                                    info!("sliced value: {:?}", sliced_value);
+                                    let s = std::mem::size_of::<u128>(); //TODO(df): Move to lazy_static
+                                    let int_bytes = if s < sliced_value.len() {
+                                        sliced_value.split_at(s).0
+                                    } else {
+                                        sliced_value
+                                    };
+                                    let vec_bytes = int_bytes.to_vec();
+                                    info!("corrected value: {:?}", vec_bytes);
+                                    let padded_value = pad_bytes(&vec_bytes, s);
+                                    info!("padded value: {:?}", padded_value);
+                                    let value_to_change = u128::from_be_bytes(padded_value.try_into().unwrap());
+                                    info!("u128 value: {:?}", value_to_change);
+                                    let changed_value = change(value_to_change);
+                                    info!("changed u128 value: {:?}", changed_value);
+                                    //TODO(df): Trim from 16 bytes to proper size
+                                    let updated_slice = change(u128::from_be_bytes(pad_bytes(&vec_bytes, s).try_into().unwrap())).to_be_bytes().to_vec();
+                                    info!("updating value: {:?} - {:?} -> {:?}", value, updated_slice, replace_slice(value, &updated_slice, range));
+                                    Command::WriteCharacteristic(
+                                        peripheral.clone(), characteristic.clone(), replace_slice(value, &updated_slice, range))
+                                })
                             } else {
                                 info!("characteristic read: {:?} (range {:?})", characteristic, range);
-                                Either::Right(get_slice(value, range).iter().map(|v| format!("{:02X?}", v)).collect::<Vec<String>>().join(" "))
+                                Either::Right(hex::encode(sliced_value))
                             }
                         } else {
                             Either::Right("characteristic read failed".to_string())
@@ -540,9 +571,58 @@ fn get_slice(vector: &Vec<u8>, slice: Option<(Option<usize>, Option<usize>)>) ->
     }
 }
 
+fn pad_bytes(value: &Vec<u8>, size: usize) -> Vec<u8> {
+    let mut buf: Vec<u8> = vec![0; size - value.len()];
+    buf.extend_from_slice(value);
+    buf
+}
+
+fn replace_slice(source: &Vec<u8>, value: &Vec<u8>, range: Option<(Option<usize>, Option<usize>)>) -> Vec<u8> {
+    if let Some(range) = range {
+        let r = value.iter().cloned();
+        let mut v = source.clone();
+        match range {
+            (Some(start), Some(end)) => v.splice(start..end, r),
+            (Some(start), None) => v.splice(start.., r),
+            (None, Some(end)) => v.splice(..end, r),
+            (None, None) => v.splice(.., r),
+        };
+        v
+    } else {
+        pad_bytes(value, source.len())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replace_slice_ok() {
+        assert_eq!(replace_slice(&vec![1, 2, 3], &vec![1, 4], None), &[0, 1, 4]);
+        assert_eq!(replace_slice(&vec![1, 2, 3], &vec![5, 4], Some((Some(0), Some(2)))), &[5, 4, 3]);
+        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((None, Some(3)))), &[6, 7, 4]);
+        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((Some(1), None))), &[1, 6, 7]);
+        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((None, None))), &[6, 7]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn replace_slice_incorrect_range() {
+        replace_slice(&vec![1], &vec![1, 4], Some((Some(3), Some(0))));
+    }
+
+    #[test]
+    #[should_panic]
+    fn replace_slice_out_of_range() {
+        replace_slice(&vec![1], &vec![1, 4], Some((Some(0), Some(5))));
+    }
+
+    #[test]
+    #[should_panic]
+    fn replace_slice_source_too_short() {
+        replace_slice(&vec![1], &vec![1, 4], None);
+    }
 
     #[test]
     fn negation_token() {

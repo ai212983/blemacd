@@ -20,4 +20,5 @@ postage = { version = "0.4.1", features = ["futures-traits"] }
 regex = "1.5.4"
 humantime = "2.1.0"
 uuid = { version = "0.8", features = ["v4"] }
+hex = "0.4.3"
 lazy_static = "1.4.0"
