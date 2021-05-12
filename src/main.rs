@@ -244,10 +244,10 @@ impl Session {
                                     } else {
                                         sliced_value
                                     };
-                                    let updated_slice = change(u128::from_be_bytes(adjust_bytes(&int_bytes.to_vec(), s).try_into().unwrap())).to_be_bytes().to_vec();
+                                    let updated_slice = change(u128::from_be_bytes(adjust_bytes(&int_bytes.to_vec(), U128_SIZE).try_into().unwrap())).to_be_bytes().to_vec();
                                     debug!("updating value: {:?} - {:?} -> {:?}",
                                            hex::encode(value),
-                                           hex::encode(updated_slice),
+                                           hex::encode(&updated_slice),
                                            hex::encode(replace_slice(value, &updated_slice, range)));
                                     Command::WriteCharacteristic(
                                         peripheral.clone(), characteristic.clone(), replace_slice(value, &updated_slice, range))
