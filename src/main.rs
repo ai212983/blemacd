@@ -121,6 +121,8 @@ impl Session {
     }
 
     fn get_next_command(&mut self, input: &mut String, results: &Vec<CommandResult>) -> Either<Command, String> {
+        const U128_SIZE: usize = std::mem::size_of::<u128>();
+
         if results.len() == 0 {
             if let InputToken::Address(token, _) = consume_token(input) {
                 Either::Left(match token.as_str() {
@@ -209,10 +211,10 @@ impl Session {
                                     InputToken::Address(token, _) => {
                                         let value = hex::decode(token).unwrap();
                                         if pending_range.is_some() {
-                                            let v = u128::from_be_bytes(adjust_bytes(&value, std::mem::size_of::<u128>()).try_into().unwrap());
+                                            let v = u128::from_be_bytes(adjust_bytes(&value, U128_SIZE).try_into().unwrap());
                                             self.pending_changes.insert(
                                                 characteristic.id(),
-                                                Box::new(move |_| v)
+                                                Box::new(move |_| v),
                                             );
                                             Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
                                         } else {
@@ -236,16 +238,17 @@ impl Session {
                             if let Some((_, change)) = self.pending_changes.remove_entry(id) {
                                 info!("characteristic read: {:?}, now updating", characteristic);
                                 Either::Left({
-                                    info!("sliced value: {:?}", sliced_value);
-                                    let s = std::mem::size_of::<u128>(); //TODO(df): Move to lazy_static
-                                    let int_bytes = if s < sliced_value.len() {
-                                        sliced_value.split_at(s).0
+                                    debug!("sliced value: {:?}", sliced_value);
+                                    let int_bytes = if U128_SIZE < sliced_value.len() {
+                                        sliced_value.split_at(U128_SIZE).0
                                     } else {
                                         sliced_value
                                     };
                                     let updated_slice = change(u128::from_be_bytes(adjust_bytes(&int_bytes.to_vec(), s).try_into().unwrap())).to_be_bytes().to_vec();
-                                    //TODO(df): Trim changed value from 16 bytes to proper size
-                                    info!("updating value: {:?} - {:?} -> {:?}", value, updated_slice, replace_slice(value, &updated_slice, range));
+                                    debug!("updating value: {:?} - {:?} -> {:?}",
+                                           hex::encode(value),
+                                           hex::encode(updated_slice),
+                                           hex::encode(replace_slice(value, &updated_slice, range)));
                                     Command::WriteCharacteristic(
                                         peripheral.clone(), characteristic.clone(), replace_slice(value, &updated_slice, range))
                                 })
@@ -580,7 +583,6 @@ fn adjust_bytes(source: &Vec<u8>, size: usize) -> Vec<u8> {
 
 fn replace_slice(source: &Vec<u8>, value: &Vec<u8>, range: Option<(Option<usize>, Option<usize>)>) -> Vec<u8> {
     if let Some(range) = range {
-        let mut r = value.iter().cloned();
         let len = source.len();
         let mut v = source.clone();
         match range {
