@@ -89,7 +89,7 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
 
 struct Session {
     controller: Controller,
-    pending_changes: HashMap<Uuid, fn(u128) -> u128>,
+    pending_changes: HashMap<Uuid, Box<dyn Fn(u128) -> u128 + Send + 'static>>,
     ranges: HashMap<Uuid, (Option<usize>, Option<usize>)>,
     pending_ranges: HashMap<uuid::Uuid, (Option<usize>, Option<usize>)>,
 }
@@ -202,20 +202,22 @@ impl Session {
                                     InputToken::Negation => {
                                         self.pending_changes.insert(
                                             characteristic.id(),
-                                            |v| if v == 0 { 1 } else { 0 },
+                                            Box::new(|v| if v == 0 { 1 } else { 0 }),
                                         );
                                         Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
                                     }
                                     InputToken::Address(token, _) => {
+                                        let value = hex::decode(token).unwrap();
                                         if pending_range.is_some() {
+                                            let v = u128::from_be_bytes(adjust_bytes(&value, std::mem::size_of::<u128>()).try_into().unwrap());
                                             self.pending_changes.insert(
                                                 characteristic.id(),
-                                                |v| v,
+                                                Box::new(move |_| v)
                                             );
                                             Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
                                         } else {
                                             Command::WriteCharacteristic(
-                                                peripheral.clone(), characteristic.clone(), hex::decode(token).unwrap(),
+                                                peripheral.clone(), characteristic.clone(), value,
                                             )
                                         }
                                     }
@@ -241,15 +243,7 @@ impl Session {
                                     } else {
                                         sliced_value
                                     };
-                                    let vec_bytes = int_bytes.to_vec();
-                                    info!("corrected value: {:?}", vec_bytes);
-                                    let padded_value = adjust_bytes(&vec_bytes, s);
-                                    info!("padded value: {:?}", padded_value);
-                                    let value_to_change = u128::from_be_bytes(padded_value.try_into().unwrap());
-                                    info!("u128 value: {:?}", value_to_change);
-                                    let changed_value = change(value_to_change);
-                                    info!("changed u128 value: {:?}", changed_value);
-                                    let updated_slice = change(u128::from_be_bytes(adjust_bytes(&vec_bytes, s).try_into().unwrap())).to_be_bytes().to_vec();
+                                    let updated_slice = change(u128::from_be_bytes(adjust_bytes(&int_bytes.to_vec(), s).try_into().unwrap())).to_be_bytes().to_vec();
                                     //TODO(df): Trim changed value from 16 bytes to proper size
                                     info!("updating value: {:?} - {:?} -> {:?}", value, updated_slice, replace_slice(value, &updated_slice, range));
                                     Command::WriteCharacteristic(

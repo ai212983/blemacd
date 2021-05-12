@@ -179,20 +179,20 @@ checksum = "cf1de2fe8c75bc145a2f577add951f8134889b4795d47466a54a5c846d691693"
 name = "blemacd"
 version = "0.1.0"
 dependencies = [
-    "async-macros",
-    "async-std",
-    "chrono",
-    "clap",
-    "core_bluetooth",
-    "env_logger",
-    "futures",
-    "hex",
-    "humantime",
-    "lazy_static",
-    "log",
-    "postage",
-    "regex",
-    "uuid",
+ "async-macros",
+ "async-std",
+ "chrono",
+ "clap",
+ "core_bluetooth",
+ "env_logger",
+ "futures",
+ "hex",
+ "humantime",
+ "lazy_static",
+ "log",
+ "postage",
+ "regex",
+ "uuid",
 ]
 
 [[package]]
@@ -531,7 +531,7 @@ version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5aca5565f760fb5b220e499d72710ed156fdb74e631659e99377d9ebfbd13ae8"
 dependencies = [
-    "libc",
+ "libc",
 ]
 
 [[package]]
