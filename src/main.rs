@@ -243,14 +243,14 @@ impl Session {
                                     };
                                     let vec_bytes = int_bytes.to_vec();
                                     info!("corrected value: {:?}", vec_bytes);
-                                    let padded_value = pad_bytes(&vec_bytes, s);
+                                    let padded_value = adjust_bytes(&vec_bytes, s);
                                     info!("padded value: {:?}", padded_value);
                                     let value_to_change = u128::from_be_bytes(padded_value.try_into().unwrap());
                                     info!("u128 value: {:?}", value_to_change);
                                     let changed_value = change(value_to_change);
                                     info!("changed u128 value: {:?}", changed_value);
-                                    //TODO(df): Trim from 16 bytes to proper size
-                                    let updated_slice = change(u128::from_be_bytes(pad_bytes(&vec_bytes, s).try_into().unwrap())).to_be_bytes().to_vec();
+                                    let updated_slice = change(u128::from_be_bytes(adjust_bytes(&vec_bytes, s).try_into().unwrap())).to_be_bytes().to_vec();
+                                    //TODO(df): Trim changed value from 16 bytes to proper size
                                     info!("updating value: {:?} - {:?} -> {:?}", value, updated_slice, replace_slice(value, &updated_slice, range));
                                     Command::WriteCharacteristic(
                                         peripheral.clone(), characteristic.clone(), replace_slice(value, &updated_slice, range))
@@ -571,25 +571,33 @@ fn get_slice(vector: &Vec<u8>, slice: Option<(Option<usize>, Option<usize>)>) ->
     }
 }
 
-fn pad_bytes(value: &Vec<u8>, size: usize) -> Vec<u8> {
-    let mut buf: Vec<u8> = vec![0; size - value.len()];
-    buf.extend_from_slice(value);
-    buf
+fn adjust_bytes(source: &Vec<u8>, size: usize) -> Vec<u8> {
+    let len = source.len();
+    if len == size {
+        source.clone()
+    } else if size > len {
+        let mut buf: Vec<u8> = vec![0; size - len];
+        buf.extend_from_slice(source);
+        buf
+    } else {
+        source.split_at(len - size).1.to_vec()
+    }
 }
 
 fn replace_slice(source: &Vec<u8>, value: &Vec<u8>, range: Option<(Option<usize>, Option<usize>)>) -> Vec<u8> {
     if let Some(range) = range {
-        let r = value.iter().cloned();
+        let mut r = value.iter().cloned();
+        let len = source.len();
         let mut v = source.clone();
         match range {
-            (Some(start), Some(end)) => v.splice(start..end, r),
-            (Some(start), None) => v.splice(start.., r),
-            (None, Some(end)) => v.splice(..end, r),
-            (None, None) => v.splice(.., r),
+            (Some(start), Some(end)) => v.splice(start..end, adjust_bytes(&value, end - start).into_iter()),
+            (Some(start), None) => v.splice(start.., adjust_bytes(&value, len - start).into_iter()),
+            (None, Some(end)) => v.splice(..end, adjust_bytes(&value, end).into_iter()),
+            (None, None) => v.splice(.., adjust_bytes(&value, len))
         };
         v
     } else {
-        pad_bytes(value, source.len())
+        adjust_bytes(value, source.len())
     }
 }
 
@@ -598,12 +606,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn adjust_bytes_test() {
+        assert_eq!(adjust_bytes(&vec![1, 2, 3], 3), &[1, 2, 3]);
+        assert_eq!(adjust_bytes(&vec![1, 2, 3], 5), &[0, 0, 1, 2, 3]);
+        assert_eq!(adjust_bytes(&vec![1, 2, 3], 2), &[2, 3]);
+        assert_eq!(adjust_bytes(&vec![1, 2, 3], 1), &[3]);
+    }
+
+    #[test]
     fn replace_slice_ok() {
         assert_eq!(replace_slice(&vec![1, 2, 3], &vec![1, 4], None), &[0, 1, 4]);
+        assert_eq!(replace_slice(&vec![1], &vec![1, 4], None), &[4]);
+        assert_eq!(replace_slice(&vec![1, 2, 3], &vec![0, 0, 0, 1, 4], None), &[0, 1, 4]);
+        assert_eq!(replace_slice(&vec![1, 2, 3], &vec![4], None), &[0, 0, 4]);
+
         assert_eq!(replace_slice(&vec![1, 2, 3], &vec![5, 4], Some((Some(0), Some(2)))), &[5, 4, 3]);
-        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((None, Some(3)))), &[6, 7, 4]);
-        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((Some(1), None))), &[1, 6, 7]);
-        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((None, None))), &[6, 7]);
+        assert_eq!(replace_slice(&vec![1, 2, 3], &vec![4], Some((Some(0), Some(2)))), &[0, 4, 3]);
+        assert_eq!(replace_slice(&vec![1, 2, 3], &vec![0, 0, 0, 5, 4], Some((Some(0), Some(2)))), &[5, 4, 3]);
+
+        assert_eq!(replace_slice(&vec![1, 2, 3], &vec![0, 0, 0, 0, 4], Some((Some(1), Some(2)))), &[1, 4, 3]);
+
+        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((None, Some(3)))), &[0, 6, 7, 4]);
+        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6], Some((None, Some(3)))), &[0, 0, 6, 4]);
+        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7, 8, 9], Some((None, Some(3)))), &[7, 8, 9, 4]);
+
+        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((Some(1), None))), &[1, 0, 6, 7]);
+        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6], Some((Some(1), None))), &[1, 0, 0, 6]);
+        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![0, 6, 7, 8, 9], Some((Some(1), None))), &[1, 7, 8, 9]);
+
+        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((None, None))), &[0, 0, 6, 7]);
+        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7, 8, 9, 10, 11], Some((None, None))), &[8, 9, 10, 11]);
     }
 
     #[test]
@@ -616,12 +648,6 @@ mod tests {
     #[should_panic]
     fn replace_slice_out_of_range() {
         replace_slice(&vec![1], &vec![1, 4], Some((Some(0), Some(5))));
-    }
-
-    #[test]
-    #[should_panic]
-    fn replace_slice_source_too_short() {
-        replace_slice(&vec![1], &vec![1, 4], None);
     }
 
     #[test]
