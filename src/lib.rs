@@ -1,6 +1,7 @@
 use std::slice::Iter;
 
 pub mod handlers;
+pub mod shutting_down_stream;
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone, Copy)]
 pub enum Position {

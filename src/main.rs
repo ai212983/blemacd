@@ -1,28 +1,24 @@
 use std::collections::hash_map::{Entry, HashMap};
 use std::convert::TryInto;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use async_std::{
     io::BufReader,
     os::unix::net::{UnixListener, UnixStream},
     path::Path,
-    prelude::*,
     task,
 };
 use core_bluetooth::uuid::Uuid;
 use env_logger::{Builder, Env};
 use futures::{
     AsyncBufReadExt, AsyncWriteExt, channel::mpsc, future::{Either, Future, FutureExt}, select, sink::SinkExt,
-    stream::Fuse,
     StreamExt,
 };
 use lazy_static::lazy_static;
 use log::*;
 use regex::Regex;
 
-use blemacd::handlers::*;
+use blemacd::{handlers::*, shutting_down_stream::*};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 type Sender<T> = mpsc::UnboundedSender<T>;
@@ -69,8 +65,7 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
             stream: stream.clone(),
             shutdown: shutdown_receiver,
         })
-        .await
-        .unwrap();
+        .await.unwrap();
 
     let shutdown = Arc::new(shutdown_sender);
     while let Some(line) = lines.next().await {
@@ -80,8 +75,7 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
                 peer_id: idx,
                 shutdown: shutdown.clone(),
             })
-            .await
-            .unwrap();
+            .await.unwrap();
     }
 
     Ok(())
@@ -278,21 +272,19 @@ async fn peer_writer_loop(
     stream: Arc<UnixStream>,
     shutdown: Receiver<Void>) -> Result<()> {
     let mut stream = &*stream;
-    let mut events = FusedStream::new(Box::pin(messages), Box::pin(shutdown.fuse()));
+    let mut events = ShuttingDownStream::new(messages, shutdown);
 
     let mut session = Session::new(controller);
 
-    while let Some(event) = events.next().await {
-        if let Some(r) = &event.reply {
-            let r = session.process(r.clone()).await;
-            let s = if event.shutdown {
-                r.to_owned()
-            } else {
-                r.to_owned() + "\n"
-            };
-            AsyncWriteExt::write_all(&mut stream, s.as_bytes()).await?;
-        }
-        if event.shutdown {
+    while let Some((message, is_shutting_down)) = events.next().await {
+        let r = session.process(message).await;
+        let s = if is_shutting_down {
+            r.to_owned()
+        } else {
+            r.to_owned() + "\n"
+        };
+        AsyncWriteExt::write_all(&mut stream, s.as_bytes()).await?;
+        if is_shutting_down {
             break;
         }
     }
@@ -353,10 +345,10 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
             // Other commands requires time to be processed, like connect to peripheral,
             // discover service, read from characteristic. They shouldn't block execution thread,
             // so new task::spawn will be created.
-            PeerEvent::Command { id, peer_id, shutdown } => {
+            PeerEvent::Command { id, peer_id, shutdown: _ } => {
                 if let Some(peer) = peers.get_mut(&peer_id) {
                     info!("sending: '{}' to {}", id, peer_id);
-                    peer.send(id.clone()).await.unwrap(); //TODO(df): Do we have to unwrap?
+                    peer.send(id.clone()).await.unwrap();
                 }
             }
             PeerEvent::NewPeer {
@@ -390,8 +382,7 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
 
                             disconnect_sender
                                 .send((idx, client_receiver, stream.clone()))
-                                .await
-                                .unwrap();
+                                .await.unwrap();
                             res
                         });
                     }
@@ -405,50 +396,6 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
     while let Some((_name, _pending_replies, _stream)) = disconnect_receiver.next().await {}
 }
 
-struct FusedStream<'a> {
-    messages: Pin<Box<&'a mut Receiver<String>>>,
-    shutdown: Pin<Box<Fuse<Receiver<Void>>>>,
-}
-
-impl<'a> FusedStream<'a> {
-    fn new(
-        messages: Pin<Box<&'a mut Receiver<String>>>,
-        shutdown: Pin<Box<Fuse<Receiver<Void>>>>,
-    ) -> FusedStream {
-        Self { messages, shutdown }
-    }
-}
-
-#[derive(Debug)]
-struct FusedEvent {
-    reply: Option<String>,
-    shutdown: bool,
-}
-
-// TODO(df): I am pretty sure there is something like this in async streams?
-impl<'a> Stream for FusedStream<'a> {
-    type Item = FusedEvent;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let m = Pin::new(&mut self.messages).poll_next(cx);
-        let s = Pin::new(&mut self.shutdown).poll_next(cx);
-
-        if m.is_ready() || s.is_ready() {
-            Poll::Ready(Some(FusedEvent {
-                reply: match m {
-                    Poll::Ready(reply) => reply,
-                    Poll::Pending => None,
-                },
-                shutdown: match s {
-                    Poll::Ready(None) => true,
-                    _ => false,
-                },
-            }))
-        } else {
-            Poll::Pending
-        }
-    }
-}
 
 #[derive(Debug)]
 enum PeerEvent {
