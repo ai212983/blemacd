@@ -16,7 +16,7 @@ use futures::{
 };
 use log::*;
 
-use blemacd::{handlers::*, input_token::*, shutting_down_stream::*};
+use blemacd::{byte_slices::*, handlers::*, input_token::*, shutting_down_stream::*};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 type Sender<T> = mpsc::UnboundedSender<T>;
@@ -113,7 +113,6 @@ impl Session {
     }
 
     fn get_next_command(&mut self, input: &mut String, results: &Vec<CommandResult>) -> Either<Command, String> {
-        const U128_SIZE: usize = std::mem::size_of::<u128>();
 
         if results.len() == 0 {
             if let InputToken::Address(token, _) = consume_token(input) {
@@ -203,7 +202,7 @@ impl Session {
                                     InputToken::Address(token, _) => {
                                         let value = hex::decode(token).unwrap();
                                         if pending_range.is_some() {
-                                            let v = u128::from_be_bytes(adjust_bytes(&value, U128_SIZE).try_into().unwrap());
+                                            let v = bytes_to_u128(&value);
                                             self.pending_changes.insert(
                                                 characteristic.id(),
                                                 Box::new(move |_| v),
@@ -231,12 +230,7 @@ impl Session {
                                 info!("characteristic read: {:?}, now updating", characteristic);
                                 Either::Left({
                                     debug!("sliced value: {:?}", sliced_value);
-                                    let int_bytes = if U128_SIZE < sliced_value.len() {
-                                        sliced_value.split_at(U128_SIZE).0
-                                    } else {
-                                        sliced_value
-                                    };
-                                    let updated_slice = change(u128::from_be_bytes(adjust_bytes(&int_bytes.to_vec(), U128_SIZE).try_into().unwrap())).to_be_bytes().to_vec();
+                                    let updated_slice = change(bytes_to_u128(&sliced_value.to_vec())).to_be_bytes().to_vec();
                                     debug!("updating value: {:?} - {:?} -> {:?}",
                                            hex::encode(value),
                                            hex::encode(&updated_slice),

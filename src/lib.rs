@@ -3,6 +3,7 @@ use std::slice::Iter;
 pub mod handlers;
 pub mod shutting_down_stream;
 pub mod input_token;
+pub mod byte_slices;
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone, Copy)]
 pub enum Position {
