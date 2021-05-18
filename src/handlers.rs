@@ -53,7 +53,7 @@ impl fmt::Display for PeripheralInfo {
 #[derive(Debug, Clone)]
 pub enum CommandResult {
     GetStatus(Duration, Option<(usize, usize)>),
-    ListConnectedDevices(HashSet<Peripheral>),
+    ListConnectedDevices(HashMap<BLE_Uuid, PeripheralInfo>),
     ListDevices(HashMap<BLE_Uuid, PeripheralInfo>),
     FindPeripheral(Option<PeripheralInfo>),
     ConnectToPeripheral(Peripheral),
@@ -319,9 +319,11 @@ impl InnerHandler {
                     Some((self.peripherals.len(), self.connected_peripherals.len())),
                 )).unwrap()
             }
-            Command::ListConnectedDevices => sender.blocking_send(CommandResult::ListConnectedDevices(
-                self.connected_peripherals.clone()
-            )).unwrap(),
+            Command::ListConnectedDevices => sender.blocking_send(CommandResult::ListConnectedDevices({
+                let mut connected = self.peripherals.clone();
+                connected.retain(|k, v| { self.connected_peripherals.contains(&v.peripheral) });
+                connected
+            })).unwrap(),
             Command::ListDevices => sender.blocking_send(CommandResult::ListDevices(
                 self.peripherals.clone()
             )).unwrap(),

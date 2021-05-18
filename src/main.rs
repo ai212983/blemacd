@@ -1,5 +1,4 @@
 use std::collections::hash_map::{Entry, HashMap};
-use std::convert::TryInto;
 use std::sync::Arc;
 
 use async_std::{
@@ -112,6 +111,7 @@ impl Session {
         }
     }
 
+    /// This function contains main application logic
     fn get_next_command(&mut self, input: &mut String, results: &Vec<CommandResult>) -> Either<Command, String> {
 
         if results.len() == 0 {
@@ -144,6 +144,16 @@ impl Session {
                             .collect::<Vec<String>>();
                         Either::Right(format!(
                             "{} devices total\n{}",
+                            devices.len(),
+                            devices.join("\n")
+                        ))
+                    }
+                    CommandResult::ListConnectedDevices(devices) => {
+                        let devices = devices.values()
+                            .map(|p| p.to_string())
+                            .collect::<Vec<String>>();
+                        Either::Right(format!(
+                            "{} connected devices\n{}",
                             devices.len(),
                             devices.join("\n")
                         ))
