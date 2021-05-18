@@ -1,5 +1,7 @@
 use std::convert::TryInto;
 
+const U128_SIZE: usize = std::mem::size_of::<u128>();
+
 pub fn get_slice(vector: &Vec<u8>, slice: Option<(Option<usize>, Option<usize>)>) -> &[u8] {
     match slice {
         None => vector,

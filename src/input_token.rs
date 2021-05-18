@@ -1,8 +1,6 @@
 use lazy_static::lazy_static;
 use regex::Regex;
 
-const U128_SIZE: usize = std::mem::size_of::<u128>();
-
 #[derive(PartialEq, Debug)]
 pub enum InputToken {
     Address(String, Option<(Option<usize>, Option<usize>)>),
