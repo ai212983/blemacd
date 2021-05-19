@@ -168,9 +168,9 @@ impl Session {
                         } else {
                             Either::Right("peripheral match not found".to_string())
                         },
-                    CommandResult::ConnectToPeripheral(peripheral) => {
+                    CommandResult::ConnectToPeripheral(info) => {
                         //TODO(df): Proper connection logging
-                        info!("connected to peripheral {:?}", peripheral);
+                        info!("connected to peripheral {:?}", info);
                         if input.is_empty() {
                             let cmt = results.iter().find_map(|(command, _)|
                                 match command {
@@ -181,11 +181,11 @@ impl Session {
                                     _ => None
                                 });
 
-                            Either::Right(format!("connected to peripheral {:?} {}", peripheral, cmt.unwrap_or("".to_string())))
+                            Either::Right(format!("connected to peripheral {} {}", info, cmt.unwrap_or("".to_string())))
                         } else {
                             if let InputToken::Address(token, _) = consume_token(input) {
                                 info!("Connected to peripheral, searching for Service {:?}", input);
-                                Either::Left(Command::FindService(peripheral.clone(), token.to_string()))
+                                Either::Left(Command::FindService(info.peripheral.clone(), token.to_string()))
                             } else {
                                 Either::Right("connected to peripheral".to_string())
                             }

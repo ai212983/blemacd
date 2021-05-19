@@ -56,7 +56,7 @@ pub enum CommandResult {
     ListConnectedDevices(HashMap<BLE_Uuid, PeripheralInfo>),
     ListDevices(HashMap<BLE_Uuid, PeripheralInfo>),
     FindPeripheral(Option<PeripheralInfo>),
-    ConnectToPeripheral(Peripheral),
+    ConnectToPeripheral(PeripheralInfo),
     FindService(Peripheral, Option<Service>),
     FindCharacteristic(Peripheral, Option<Characteristic>),
     ReadCharacteristic(Peripheral, Characteristic, Option<Vec<u8>>),
@@ -343,15 +343,15 @@ impl InnerHandler {
             }
             Command::ConnectToPeripheral(peripheral) => {
                 let id = peripheral.id().clone();
-                let device = self.get_connected_device(id);
+                let info = self.peripherals.get(&id).unwrap().clone();
 
-                if let Some(peripheral) = device {
-                    sender.blocking_send(CommandResult::ConnectToPeripheral(peripheral.clone())).unwrap();
+                if let Some(peripheral) = self.get_connected_device(id) {
+                    sender.blocking_send(CommandResult::ConnectToPeripheral(info.clone())).unwrap();
                 } else {
                     &self.add_matcher(sender, PeripheralConnectedMatcher::new(
                         &peripheral,
-                        |peripheral| {
-                            return CommandResult::ConnectToPeripheral(peripheral.clone());
+                        move |peripheral| {
+                            return CommandResult::ConnectToPeripheral(info.clone());
                         }));
                     central.connect(&peripheral);
                 }
