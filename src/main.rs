@@ -113,7 +113,6 @@ impl Session {
 
     /// This function contains main application logic
     fn get_next_command(&mut self, input: &mut String, results: &Vec<CommandResult>) -> Either<Command, String> {
-
         if results.len() == 0 {
             if let InputToken::Address(token, _) = consume_token(input) {
                 Either::Left(match token.as_str() {
@@ -122,7 +121,12 @@ impl Session {
                     COMMAND_CONNECTED_DEVICES => Command::ListConnectedDevices,
                     _ => {
                         info!("request for peripheral: '{:?}'", token);
-                        Command::FindPeripheral(token.to_string())
+                        if token.starts_with(":") {
+                            let uuid = hex::decode(token.get(1..).unwrap()).unwrap();
+                            Command::FindPeripheralByService(Uuid::from_slice(uuid.as_ref()))
+                        } else {
+                            Command::FindPeripheral(token.to_string())
+                        }
                     }
                 })
             } else {
@@ -165,6 +169,7 @@ impl Session {
                             Either::Right("peripheral match not found".to_string())
                         },
                     CommandResult::ConnectToPeripheral(peripheral) => {
+                        //TODO(df): Proper connection logging
                         info!("connected to peripheral {:?}", peripheral);
                         if input.is_empty() {
                             Either::Right(format!("connected to peripheral {:?}, input: {:?}", peripheral, input))

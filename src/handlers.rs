@@ -68,6 +68,7 @@ pub enum Command {
     ListDevices,
     ListConnectedDevices,
     FindPeripheral(String),
+    FindPeripheralByService(BLE_Uuid),
     ConnectToPeripheral(Peripheral),
     FindService(Peripheral, String),
     FindCharacteristic(Peripheral, Service, String, Uuid),
@@ -311,6 +312,7 @@ struct InnerHandler {
 }
 
 impl InnerHandler {
+    //TODO(df): Think of returning original command too
     fn execute(&mut self, command: Command, mut sender: oneshot::Sender<CommandResult>, central: &CentralManager) {
         match command {
             Command::GetStatus => {
@@ -330,6 +332,12 @@ impl InnerHandler {
             Command::FindPeripheral(uuid_substr) => {
                 info!("Finding peripheral with substring '{:?}'", uuid_substr);
                 let device = self.find_device(uuid_substr);
+                info!("Device search result '{:?}'", device);
+                sender.blocking_send(CommandResult::FindPeripheral(device)).unwrap()
+            }
+            Command::FindPeripheralByService(uuid) => {
+                info!("Finding peripheral with service '{:?}'", uuid);
+                let device = self.find_device_by_service(uuid);
                 info!("Device search result '{:?}'", device);
                 sender.blocking_send(CommandResult::FindPeripheral(device)).unwrap()
             }
@@ -489,6 +497,13 @@ impl InnerHandler {
         let s = uuid_substr.as_str();
         self.peripherals.iter().find_map(|(uuid, peripheral_info)|
             if uuid.to_string().contains(s) { Some(peripheral_info.clone()) } else { None })
+    }
+
+    fn find_device_by_service(&self, uuid: BLE_Uuid) -> Option<PeripheralInfo> {
+        self.peripherals.iter().find_map(|(_, peripheral_info)|
+            if peripheral_info.advertisement_data.service_uuids().contains(&uuid)
+            { Some(peripheral_info.clone()) } else { None }
+        )
     }
 
     fn get_connected_device(&self, uuid: BLE_Uuid) -> Option<Peripheral> {

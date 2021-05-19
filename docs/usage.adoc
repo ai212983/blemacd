@@ -1,118 +1,104 @@
 = Usage
 
-WARNING: Documentation below is a draft. As such, it is not implemented yet and subject to change.
-
-== Intro
-
-This daemon uses a bluez-like object path like `/<DEVICE>/<SERVICE>/<CHARACTERISTIC>`.
-Path can be specified at start or changed by issuing commands.
-Daemon maintains connection to device, service or characteristic specified by this path for faster interaction.
-
-Root: `/`::
-Maintains list of BLE devices, no connections are established
-
-Device: `/DEVICE_UUID`::
-Connects to specified device
-
-Service: `/DEVICE_UUID/SERVICE_UUID`::
-Connects to service of specified device
-
-Characteristic: `/DEVICE_UUID/SERVICE_UUID/CHARACTERISTIC_UUID`::
-Connects to specified characteristic for specified service on device
-
+WARNING: Documentation below is a draft.As such, it is not implemented yet and subject to change.
 
 == Starting up
 
 [source,shell]
 ----
-blemacd <OBJECT_PATH>
+blemacd [options]
 ----
-
-== Stopping
-
-TODO
 
 === Options
 
 `--path /tmp/blemacd.sock`::
 Specifies the path for Unix Socket. `/tmp/blemacd.sock` is the default.
 
+== Stopping
+
+TODO
 
 == Usage
 
 === Issuing commands
-Commands are issued by writing text-based commands to the socket. I.e. with `nc`:
+
+Commands are issued by writing text-based commands to the socket.
+I.e. with `nc`:
 
 Connect socket and input/output via std.
-[source,shell]
-----
-nc -U /tmp/blemacd.sock
-----
-
-
-Send `get` command and exit.
-[source,shell]
-----
-nc -U /tmp/blemacd.sock <<< get
-----
-
-=== Reading
-
-`get`::
-Returns object data at current path
-
-.Result depends on current daemon state
-
-Root::
-List of devices discovered
-
-Device::
-List of services for specified device
-
-Service::
-List of characteristics for specified service
-
-Characteristic::
-Characteristic value
-
-=== Connecting and writing
-
-`<OBJECT_PATH or/and VALUE>`::
-Change current path or write a value
-
-.For example, if daemon is in device mode:
-
-`<SERVICE_UUID>`::
-Will connect to specified service
-
-`<SERVICE_UUID>/<CHARACTERISTIC_UUID>/VALUE`::
-Will write value to specified characteristic
-
-`/<DEVICE_UUID>/<SERVICE_UUID>/<CHARACTERISTIC_UUID>/VALUE`::
-Will connect to device and write value to characteristic
-
-`/<DEVICE_UUID>/<SERVICE_UUID>`::
-Will connect to service of another device
-
-=== Multiple commands
-
-It is possible to specify multiple commands, they will be executed non-parallel, from left to right.
-
-.For daemon in device mode
-`<SERVICE_UUID> <CHARACTERISTIC_UUID>/1 <CHARACTERISTIC_2_UUID>/2`::
-Will connect to service and write values to two characteristics.
-
-`<SERVICE_UUID>/get <SERVICE_UUID>/get`::
-Will list characteristics for two services.
-
-NOTE: Writing characteristic value or using `get` will not change daemon current path.
-
-
-=== Helpers
 
 [source,shell]
 ----
-nc localhost 8880 <<< status
+❯ nc -U /tmp/blemacd.sock
 ----
 
+List all discovered peripherals and exit.
+
+[source,shell]
+----
+❯ nc -U /tmp/blemacd.sock <<< all
+----
+
+=== Commands
+
+`status`::
 Returns daemon status
+
+`all`::
+List of peripherals discovered
+
+`connected`::
+List of connected peripherals
+
+=== Addressing
+
+Whenever input doesn't match a command, it is treated as a bluez-like path, `<peripheral>/<SERVICE>/<CHARACTERISTIC>`.
+
+`<peripheral>`::
+Daemon will try to match input string to peripheral UUID and if there is a match, will connect to that peripheral.
+
+[source,shell]
+----
+❯ nc -U /tmp/blemacd.sock <<< f69
+connected to peripheral [472df789-71f0-4d87-a47f-4e818ba79f69] (Hue ambiance lamp)
+----
+
+It is also possible to connect to peripheral by service UUID:
+
+[source,shell]
+----
+❯ nc -U /tmp/blemacd.sock <<< :fe0f
+connected to peripheral [472df789-71f0-4d87-a47f-4e818ba79f69] (Hue ambiance lamp) by service [fe0f]
+----
+
+`<peripheral>/<service>`::
+Locate a service at peripheral.
+
+[source,shell]
+----
+❯ nc -U /tmp/blemacd.sock <<< f69/32bd
+service found: Service { id: Uuid(932c32bd-0000-47a2-835a-a8d455b859dd), primary: false, service: CBService(0x7ff25b605ae0) }
+----
+
+`<peripheral>/<service>/<characteristic>`::
+Read a specified characteristic.
+Result is in hex format.
+
+[source,shell]
+----
+❯ nc -U /tmp/blemacd.sock <<< f69/32bd/0007
+01010002017703029900
+----
+
+It is possible to specify range for characteristic:
+
+[source,shell]
+----
+❯ nc -U /tmp/blemacd.sock <<< f69/32bd/0007[5]
+77
+❯ nc -U /tmp/blemacd.sock <<< f69/32bd/0007[8..]
+9900
+----
+
+`<peripheral>/<service>/<characteristic>/<value>`::
+Write a value to characteristic.
