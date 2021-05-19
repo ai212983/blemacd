@@ -365,12 +365,10 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
             // Other commands requires time to be processed, like connect to peripheral,
             // discover service, read from characteristic. They shouldn't block execution thread,
             // so new task::spawn will be created.
-            PeerEvent::Command { id, peer_id, shutdown: _ } => {
+            PeerEvent::Command { id, peer_id, shutdown: _ } =>
                 if let Some(peer) = peers.get_mut(&peer_id) {
-                    info!("sending: '{}' to {}", id, peer_id);
                     peer.send(id.clone()).await.unwrap();
                 }
-            }
             PeerEvent::NewPeer {
                 idx,
                 stream,
