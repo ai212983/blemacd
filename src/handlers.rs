@@ -58,11 +58,12 @@ pub enum CommandResult {
     FindPeripheral(Option<PeripheralInfo>),
     ConnectToPeripheral(Peripheral),
     FindService(Peripheral, Option<Service>),
-    FindCharacteristic(Peripheral, Option<Characteristic>, Uuid),
+    FindCharacteristic(Peripheral, Option<Characteristic>),
     ReadCharacteristic(Peripheral, Characteristic, Option<Vec<u8>>),
     WriteCharacteristic(Peripheral, Characteristic, Result<(), Error>),
 }
 
+#[derive(Debug, Clone)]
 pub enum Command {
     GetStatus,
     ListDevices,
@@ -312,7 +313,6 @@ struct InnerHandler {
 }
 
 impl InnerHandler {
-    //TODO(df): Think of returning original command too
     fn execute(&mut self, command: Command, mut sender: oneshot::Sender<CommandResult>, central: &CentralManager) {
         match command {
             Command::GetStatus => {
@@ -364,11 +364,11 @@ impl InnerHandler {
                     }));
                 peripheral.discover_services();
             }
-            Command::FindCharacteristic(peripheral, service, uuid_substr, correlation_id) => {
+            Command::FindCharacteristic(peripheral, service, uuid_substr, _) => {
                 &self.add_matcher(sender, CharacteristicsDiscoveredMatcher::new(
                     &peripheral, &service, uuid_substr,
                     move |peripheral, characteristic| {
-                        CommandResult::FindCharacteristic(peripheral.clone(), characteristic, correlation_id)
+                        CommandResult::FindCharacteristic(peripheral.clone(), characteristic)
                     }));
                 peripheral.discover_characteristics(&service);
             }

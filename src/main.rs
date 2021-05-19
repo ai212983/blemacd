@@ -102,7 +102,7 @@ impl Session {
         loop {
             match self.get_next_command(input, &results) {
                 Either::Left(command) => {
-                    results.push(self.controller.execute(command).await);
+                    results.push((command.clone(), self.controller.execute(command).await));
                 }
                 Either::Right(reply) => {
                     return reply;
@@ -112,7 +112,7 @@ impl Session {
     }
 
     /// This function contains main application logic
-    fn get_next_command(&mut self, input: &mut String, results: &Vec<CommandResult>) -> Either<Command, String> {
+    fn get_next_command(&mut self, input: &mut String, results: &Vec<(Command, CommandResult)>) -> Either<Command, String> {
         if results.len() == 0 {
             if let InputToken::Address(token, _) = consume_token(input) {
                 Either::Left(match token.as_str() {
@@ -133,7 +133,7 @@ impl Session {
                 Either::Right("empty input".to_string())
             }
         } else {
-            if let Some(result) = results.last() {
+            if let Some((command, result)) = results.last() {
                 match result {
                     CommandResult::GetStatus(uptime, devices) => {
                         let mut status = format!("uptime {}", humantime::format_duration(*uptime));
@@ -172,7 +172,16 @@ impl Session {
                         //TODO(df): Proper connection logging
                         info!("connected to peripheral {:?}", peripheral);
                         if input.is_empty() {
-                            Either::Right(format!("connected to peripheral {:?}, input: {:?}", peripheral, input))
+                            let cmt = results.iter().find_map(|(command, _)|
+                                match command {
+                                    Command::FindPeripheralByService(uuid) => Some(
+                                        format!("by UUID [{}]", uuid.to_string())),
+                                    Command::FindPeripheral(uuid_substr) => Some(
+                                        format!("by UUID substring [{}]", uuid_substr.clone())),
+                                    _ => None
+                                });
+
+                            Either::Right(format!("connected to peripheral {:?} {}", peripheral, cmt.unwrap_or("".to_string())))
                         } else {
                             if let InputToken::Address(token, _) = consume_token(input) {
                                 info!("Connected to peripheral, searching for Service {:?}", input);
@@ -198,10 +207,14 @@ impl Session {
                             Either::Right("service not found".to_string())
                         }
                     }
-                    CommandResult::FindCharacteristic(peripheral, characteristic, uuid) => {
+                    CommandResult::FindCharacteristic(peripheral, characteristic) => {
                         if let Some(characteristic) = characteristic {
                             info!("characteristic found: {:?}", characteristic);
-                            let pending_range = self.pending_ranges.remove(uuid);
+                            let pending_range = if let Command::FindCharacteristic(_, _, _, uuid) = command {
+                                self.pending_ranges.remove(uuid)
+                            } else {
+                                panic!("incorrect command mapping");
+                            };
                             Either::Left({
                                 if let Some(range) = pending_range {
                                     self.ranges.insert(characteristic.id(), range);
