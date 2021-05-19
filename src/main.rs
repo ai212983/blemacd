@@ -144,7 +144,7 @@ impl Session {
                     }
                     CommandResult::ListPeripherals(peripherals) => {
                         let peripherals = peripherals.values()
-                            .map(|p| p.to_string())
+                            .map(|p| format!("{:.1}", p))
                             .collect::<Vec<String>>();
                         Either::Right(format!(
                             "{} peripherals total\n{}",
@@ -154,7 +154,7 @@ impl Session {
                     }
                     CommandResult::ListConnectedPeripherals(peripherals) => {
                         let peripherals = peripherals.values()
-                            .map(|p| p.to_string())
+                            .map(|p| format!("{:.1}", p))
                             .collect::<Vec<String>>();
                         Either::Right(format!(
                             "{} connected peripherals\n{}",

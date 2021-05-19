@@ -40,13 +40,21 @@ impl fmt::Display for PeripheralInfo {
         } else {
             "".to_string()
         };
-        write!(
-            f,
-            "[{}]{}: {} services",
-            self.peripheral.id(),
-            display_name,
-            self.advertisement_data.service_uuids().len()
-        )
+
+        if f.precision().unwrap_or(0) == 0 {
+            write!(
+                f,
+                "[{}] {}",
+                self.peripheral.id(),
+                display_name)
+        } else {
+            write!(
+                f,
+                "[{}] {}: {} services",
+                self.peripheral.id(),
+                display_name,
+                self.advertisement_data.service_uuids().len())
+        }
     }
 }
 
