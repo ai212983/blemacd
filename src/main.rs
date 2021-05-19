@@ -27,8 +27,8 @@ enum Void {}
 const SOCKET_PATH: &str = "/tmp/blemacd.sock";
 
 const COMMAND_STATUS: &str = "status";
-const COMMAND_ALL_DEVICES: &str = "all";
-const COMMAND_CONNECTED_DEVICES: &str = "connected";
+const COMMAND_ALL_PERIPHERALS: &str = "all";
+const COMMAND_CONNECTED_PERIPHERALS: &str = "connected";
 
 
 async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
@@ -117,8 +117,8 @@ impl Session {
             if let InputToken::Address(token, _) = consume_token(input) {
                 Either::Left(match token.as_str() {
                     COMMAND_STATUS => Command::GetStatus,
-                    COMMAND_ALL_DEVICES => Command::ListDevices,
-                    COMMAND_CONNECTED_DEVICES => Command::ListConnectedDevices,
+                    COMMAND_ALL_PERIPHERALS => Command::ListPeripherals,
+                    COMMAND_CONNECTED_PERIPHERALS => Command::ListConnectedPeripherals,
                     _ => {
                         info!("request for peripheral: '{:?}'", token);
                         if token.starts_with(":") {
@@ -135,31 +135,31 @@ impl Session {
         } else {
             if let Some((command, result)) = results.last() {
                 match result {
-                    CommandResult::GetStatus(uptime, devices) => {
+                    CommandResult::GetStatus(uptime, peripherals) => {
                         let mut status = format!("uptime {}", humantime::format_duration(*uptime));
-                        if let Some((all, connected)) = devices {
-                            status = status + &*format!(", {} devices detected, {} connected", all, connected);
+                        if let Some((all, connected)) = peripherals {
+                            status = status + &*format!(", {} peripherals detected, {} connected", all, connected);
                         }
                         Either::Right(status)
                     }
-                    CommandResult::ListDevices(devices) => {
-                        let devices = devices.values()
+                    CommandResult::ListPeripherals(peripherals) => {
+                        let peripherals = peripherals.values()
                             .map(|p| p.to_string())
                             .collect::<Vec<String>>();
                         Either::Right(format!(
-                            "{} devices total\n{}",
-                            devices.len(),
-                            devices.join("\n")
+                            "{} peripherals total\n{}",
+                            peripherals.len(),
+                            peripherals.join("\n")
                         ))
                     }
-                    CommandResult::ListConnectedDevices(devices) => {
-                        let devices = devices.values()
+                    CommandResult::ListConnectedPeripherals(peripherals) => {
+                        let peripherals = peripherals.values()
                             .map(|p| p.to_string())
                             .collect::<Vec<String>>();
                         Either::Right(format!(
-                            "{} connected devices\n{}",
-                            devices.len(),
-                            devices.join("\n")
+                            "{} connected peripherals\n{}",
+                            peripherals.len(),
+                            peripherals.join("\n")
                         ))
                     }
                     CommandResult::FindPeripheral(peripheral) =>

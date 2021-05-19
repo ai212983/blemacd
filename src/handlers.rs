@@ -53,8 +53,8 @@ impl fmt::Display for PeripheralInfo {
 #[derive(Debug, Clone)]
 pub enum CommandResult {
     GetStatus(Duration, Option<(usize, usize)>),
-    ListConnectedDevices(HashMap<BLE_Uuid, PeripheralInfo>),
-    ListDevices(HashMap<BLE_Uuid, PeripheralInfo>),
+    ListConnectedPeripherals(HashMap<BLE_Uuid, PeripheralInfo>),
+    ListPeripherals(HashMap<BLE_Uuid, PeripheralInfo>),
     FindPeripheral(Option<PeripheralInfo>),
     ConnectToPeripheral(PeripheralInfo),
     FindService(Peripheral, Option<Service>),
@@ -66,8 +66,8 @@ pub enum CommandResult {
 #[derive(Debug, Clone)]
 pub enum Command {
     GetStatus,
-    ListDevices,
-    ListConnectedDevices,
+    ListPeripherals,
+    ListConnectedPeripherals,
     FindPeripheral(String),
     FindPeripheralByService(BLE_Uuid),
     ConnectToPeripheral(Peripheral),
@@ -321,31 +321,31 @@ impl InnerHandler {
                     Some((self.peripherals.len(), self.connected_peripherals.len())),
                 )).unwrap()
             }
-            Command::ListConnectedDevices => sender.blocking_send(CommandResult::ListConnectedDevices({
+            Command::ListConnectedPeripherals => sender.blocking_send(CommandResult::ListConnectedPeripherals({
                 let mut connected = self.peripherals.clone();
                 connected.retain(|k, v| { self.connected_peripherals.contains(&v.peripheral) });
                 connected
             })).unwrap(),
-            Command::ListDevices => sender.blocking_send(CommandResult::ListDevices(
+            Command::ListPeripherals => sender.blocking_send(CommandResult::ListPeripherals(
                 self.peripherals.clone()
             )).unwrap(),
             Command::FindPeripheral(uuid_substr) => {
                 info!("Finding peripheral with substring '{:?}'", uuid_substr);
-                let device = self.find_device(uuid_substr);
-                info!("Device search result '{:?}'", device);
-                sender.blocking_send(CommandResult::FindPeripheral(device)).unwrap()
+                let peripheral = self.find_peripheral(uuid_substr);
+                info!("Peripherals search result '{:?}'", peripheral);
+                sender.blocking_send(CommandResult::FindPeripheral(peripheral)).unwrap()
             }
             Command::FindPeripheralByService(uuid) => {
                 info!("Finding peripheral with service '{:?}'", uuid);
-                let device = self.find_device_by_service(uuid);
-                info!("Device search result '{:?}'", device);
-                sender.blocking_send(CommandResult::FindPeripheral(device)).unwrap()
+                let peripheral = self.find_peripheral_by_service(uuid);
+                info!("Peripherals search result '{:?}'", peripheral);
+                sender.blocking_send(CommandResult::FindPeripheral(peripheral)).unwrap()
             }
             Command::ConnectToPeripheral(peripheral) => {
                 let id = peripheral.id().clone();
                 let info = self.peripherals.get(&id).unwrap().clone();
 
-                if let Some(peripheral) = self.get_connected_device(id) {
+                if let Some(peripheral) = self.get_connected_peripheral(id) {
                     sender.blocking_send(CommandResult::ConnectToPeripheral(info.clone())).unwrap();
                 } else {
                     &self.add_matcher(sender, PeripheralConnectedMatcher::new(
@@ -493,20 +493,20 @@ impl InnerHandler {
         &self.handlers.push((Box::new(move |event| matcher.match_event(event)), RefCell::new(sender)));
     }
 
-    fn find_device(&self, uuid_substr: String) -> Option<PeripheralInfo> {
+    fn find_peripheral(&self, uuid_substr: String) -> Option<PeripheralInfo> {
         let s = uuid_substr.as_str();
         self.peripherals.iter().find_map(|(uuid, peripheral_info)|
             if uuid.to_string().contains(s) { Some(peripheral_info.clone()) } else { None })
     }
 
-    fn find_device_by_service(&self, uuid: BLE_Uuid) -> Option<PeripheralInfo> {
+    fn find_peripheral_by_service(&self, uuid: BLE_Uuid) -> Option<PeripheralInfo> {
         self.peripherals.iter().find_map(|(_, peripheral_info)|
             if peripheral_info.advertisement_data.service_uuids().contains(&uuid)
             { Some(peripheral_info.clone()) } else { None }
         )
     }
 
-    fn get_connected_device(&self, uuid: BLE_Uuid) -> Option<Peripheral> {
+    fn get_connected_peripheral(&self, uuid: BLE_Uuid) -> Option<Peripheral> {
         self.connected_peripherals.iter().find_map(|peripheral|
             if uuid == peripheral.id() { Some(peripheral.clone()) } else { None })
     }
