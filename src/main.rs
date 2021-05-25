@@ -227,6 +227,19 @@ impl Session {
                                         );
                                         Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
                                     }
+                                    InputToken::Addition(value) => {
+                                        self.pending_changes.insert(
+                                            characteristic.id(),
+                                            Box::new(move |v|
+                                                if value.is_negative() {
+                                                    v.saturating_sub(value.saturating_neg() as u128)
+                                                } else {
+                                                    v.saturating_add(value as u128)
+                                                }
+                                            ),
+                                        );
+                                        Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
+                                    }
                                     InputToken::Address(token, _) => {
                                         let value = hex::decode(token).unwrap();
                                         if pending_range.is_some() {
@@ -242,7 +255,7 @@ impl Session {
                                             )
                                         }
                                     }
-                                    _ => Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
+                                    InputToken::None => Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
                                 }
                             })
                         } else {
