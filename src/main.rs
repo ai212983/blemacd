@@ -258,7 +258,7 @@ impl Session {
                                 info!("characteristic read: {:?}, now updating", characteristic);
                                 Either::Left({
                                     debug!("sliced value: {:?}", sliced_value);
-                                    let updated_slice = change(bytes_to_u128(&sliced_value.to_vec())).to_be_bytes().to_vec();
+                                    let updated_slice = change(bytes_to_u128(&sliced_value.to_vec())).to_le_bytes().to_vec();
                                     debug!("updating value: {:?} - {:?} -> {:?}",
                                            hex::encode(value),
                                            hex::encode(&updated_slice),
