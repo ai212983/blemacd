@@ -5,7 +5,7 @@ use regex::Regex;
 pub enum InputToken {
     Address(String, Option<(Option<usize>, Option<usize>)>),
     Negation,
-    Addition(i64),
+    Addition(i64, u128, u128),
     None,
 }
 
@@ -34,7 +34,18 @@ pub fn consume_token(input: &mut String) -> InputToken {
                 let first_char = addr.as_str().chars().next().unwrap();
                 return match first_char {
                     '!' => InputToken::Negation,
-                    '+' | '-' => InputToken::Addition(addr.as_str().parse::<i64>().unwrap()),
+                    '+' | '-' => InputToken::Addition(
+                        addr.as_str().parse::<i64>().unwrap(),
+                        if let Some(s) = to_int(cap.get(2)) {
+                            s as u128
+                        } else {
+                            u128::min_value()
+                        },
+                        if let Some(e) = to_int(cap.get(3)) {
+                            e as u128
+                        } else {
+                            u128::max_value()
+                        }),
                     _ => InputToken::Address(addr.as_str().to_string(), {
                         let start = cap.get(2);
                         let end = cap.get(3);
@@ -78,11 +89,11 @@ mod tests {
     #[test]
     fn addition_token() {
         let input = &mut "+10/212[51..75]/32".to_string();
-        assert_eq!(consume_token(input), InputToken::Addition(10));
+        assert_eq!(consume_token(input), InputToken::Addition(10, u128::min_value(), u128::max_value()));
         assert_eq!(input, "212[51..75]/32");
 
         let input = &mut "-156/".to_string();
-        assert_eq!(consume_token(input), InputToken::Addition(-156));
+        assert_eq!(consume_token(input), InputToken::Addition(-156, u128::min_value(), u128::max_value()));
         assert_eq!(input, "");
     }
 

@@ -227,16 +227,23 @@ impl Session {
                                         );
                                         Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
                                     }
-                                    InputToken::Addition(value) => {
+                                    InputToken::Addition(delta, min, max) => {
                                         self.pending_changes.insert(
                                             characteristic.id(),
-                                            Box::new(move |v|
-                                                if value.is_negative() {
-                                                    v.saturating_sub(value.saturating_neg() as u128)
+                                            Box::new(move |v| {
+                                                let mut res = if delta.is_negative() {
+                                                    v.saturating_sub(delta.saturating_neg() as u128)
                                                 } else {
-                                                    v.saturating_add(value as u128)
+                                                    v.saturating_add(delta as u128)
+                                                };
+                                                if res < min {
+                                                    min
+                                                } else if res > max {
+                                                    max
+                                                } else {
+                                                    res
                                                 }
-                                            ),
+                                            }),
                                         );
                                         Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
                                     }
@@ -272,6 +279,7 @@ impl Session {
                                 Either::Left({
                                     debug!("sliced value: {:?}", sliced_value);
                                     let updated_slice = change(bytes_to_u128(&sliced_value.to_vec())).to_le_bytes().to_vec();
+                                    //TODO(df): limit value according to specified bytes range?
                                     debug!("updating value: {:?} - {:?} -> {:?}",
                                            hex::encode(value),
                                            hex::encode(&updated_slice),
