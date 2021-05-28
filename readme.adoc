@@ -5,7 +5,7 @@
 
 This daemon is based on Apple's {url-corebt}[CoreBluetooth library].
 
-The project is a work in progress. There is a link:docs/usage.adoc[draft] on how to use it, but it's not implemented yet.
+The project is a work in progress.There is a link:docs/usage.adoc[draft] on how to use it, but it's not implemented yet.
 
 
 == Known problems
@@ -77,6 +77,10 @@ The project is a work in progress. There is a link:docs/usage.adoc[draft] on how
 * https://doc.rust-lang.org/book/ch15-05-interior-mutability.html[Interior mutability with RefCell]
 * https://doc.rust-lang.org/std/cell/index.html#when-to-choose-interior-mutability[When to choose interior mutability]
 
+=== Daemonize
+
+https://conormanning.com/posts/compiling_info_plist_on_macos_with_rust/
+* https://stackoverflow.com/questions/61443052/rust-daemon-best-practices[How to daemonize at StackOverflow]
 
 == Licensing
 

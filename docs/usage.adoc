@@ -1,22 +1,78 @@
 = Usage
 
-WARNING: Documentation below is a draft.As such, it is not implemented yet and subject to change.
+== Setting up
 
-== Starting up
+Output is omitted for the sake of brevity.
+
+=== Installation
 
 [source,shell]
 ----
-blemacd [options]
+❯ cargo build --release
+❯ cp target/release/blemacd /usr/local/bin/
+❯ sudo cp etc/com.github.blemacd.plist /Library/LaunchDaemons/
+❯ launchctl load /Library/LaunchDaemons/com.github.blemacd.plist
 ----
 
-=== Options
+=== Starting up
+
+[source,shell]
+----
+❯ launchctl start com.github.blemacd
+----
+
+System should request your permission to use Bluetooth.
+
+=== Stopping
+
+[source,shell]
+----
+❯ launchctl stop com.github.blemacd
+❯ launchctl unload /Library/LaunchDaemons/com.github.blemacd.plist
+----
+
+=== Deinstallation
+
+[source,shell]
+----
+❯ launchctl stop com.github.blemacd
+❯ launchctl unload /Library/LaunchDaemons/com.github.blemacd.plist
+❯ sudo rm /Library/LaunchDaemons/com.github.blemacd.plist
+❯ rm /usr/local/bin/blemacd
+----
+
+=== Starting as CLI application
+
+Starting with Big Sur, apps using Bluetooth needs `Info.plist` file with `NSBluetoothAlwaysUsageDescription` field.
+It can be embedded with https://docs.rs/embed_plist/1.2.0/embed_plist/[embed_plist] crate, but it https://github.com/nvzqz/embed-plist-rs/issues/1[seems not to work] on Big Sur.
+
+There is also https://conormanning.com/posts/compiling_info_plist_on_macos_with_rust/[alternate approach]
+for Rust which I haven't tried yet or
+https://github.com/ruilisi/macbit[bit-level injection tool] which
+https://github.com/ruilisi/macbit/issues/1[seems not to work] too.
+
+In my tests (Big Sur 11.4, 2017 MacBook Pro, Intel) starting application via iTerm2 has failed (log from Console.app):
+
+----
+error	16:29:14.722625+0200	blemacd	This app has crashed because it attempted to access privacy-sensitive data without a usage description.  The app's Info.plist must contain an NSBluetoothAlwaysUsageDescription key with a string value explaining to the user how the app uses this data.
+----
+
+It is unclear if app should be
+https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Procedures/Procedures.html[code signed]
+to detect plist file.
+I've tried https://eclecticlight.co/2019/01/17/code-signing-for-the-concerned-3-signing-an-app/[ad-hoc code signing]
+and signing with
+https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Procedures/Procedures.html[self-signed certificate]
+without any success, although `otool -s __TEXT __info_plist target/release/blemacd | xxd -r` returns correct plist data.
+
+At the same time, application starts just fine via Apple's Terminal.app or Intellij IDEA Terminal tool window without plist or code signing.
+
+If you have any insight on this, please contact me.
+
+=== Options (not implemented)
 
 `--path /tmp/blemacd.sock`::
 Specifies the path for Unix Socket. `/tmp/blemacd.sock` is the default.
-
-== Stopping
-
-TODO
 
 == Usage
 
@@ -102,3 +158,17 @@ It is possible to specify range for characteristic:
 
 `<peripheral>/<service>/<characteristic>/<value>`::
 Write a value to characteristic.
+
+[source,shell]
+----
+❯ nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[5]/10                <1>
+
+❯ nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[5]/-25               <2>
+
+❯ nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[8..]/-30[153..454]   <3>
+----
+
+<1> Like with reading, it is possible to specify a range for writing.
+<2> Supported operations are `+` - addition, `-` - subtraction and `!` - negation.
+<3> Values ranges are also supported.
+Resulting value will be clamped with that range.
