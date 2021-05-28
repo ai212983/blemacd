@@ -331,7 +331,7 @@ impl InnerHandler {
             }
             Command::ListConnectedPeripherals => sender.blocking_send(CommandResult::ListConnectedPeripherals({
                 let mut connected = self.peripherals.clone();
-                connected.retain(|k, v| { self.connected_peripherals.contains(&v.peripheral) });
+                connected.retain(|_k, v| { self.connected_peripherals.contains(&v.peripheral) });
                 connected
             })).unwrap(),
             Command::ListPeripherals => sender.blocking_send(CommandResult::ListPeripherals(
@@ -353,12 +353,12 @@ impl InnerHandler {
                 let id = peripheral.id().clone();
                 let info = self.peripherals.get(&id).unwrap().clone();
 
-                if let Some(peripheral) = self.get_connected_peripheral(id) {
+                if let Some(_peripheral) = self.get_connected_peripheral(id) {
                     sender.blocking_send(CommandResult::ConnectToPeripheral(info.clone())).unwrap();
                 } else {
                     &self.add_matcher(sender, PeripheralConnectedMatcher::new(
                         &peripheral,
-                        move |peripheral| {
+                        move |_peripheral| {
                             return CommandResult::ConnectToPeripheral(info.clone());
                         }));
                     central.connect(&peripheral);
@@ -473,13 +473,13 @@ impl InnerHandler {
                 tag: _,
             } => {
                 debug!("[GetPeripheralsWithServicesResult]: {}", peripherals.len());
-                for peripheral in peripherals {
-                    //println!("Discovered with result: {}", peripheral.id());
-                    /*    if self.connected_peripherals.insert(p.clone()) {
+                /*for peripheral in peripherals {
+                    println!("Discovered with result: {}", peripheral.id());
+                        if self.connected_peripherals.insert(p.clone()) {
                         debug!("connecting to {})", p.id());
                         self.central.connect(&p);
-                    }*/
-                }
+                    }
+                } */
             }
 
             _ => {}

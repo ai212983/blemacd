@@ -30,7 +30,6 @@ const COMMAND_STATUS: &str = "status";
 const COMMAND_ALL_PERIPHERALS: &str = "all";
 const COMMAND_CONNECTED_PERIPHERALS: &str = "connected";
 
-
 async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     // https://docs.rs/async-std/0.99.3/async_std/os/unix/net/struct.UnixListener.html
     let listener = UnixListener::bind(path).await?;
@@ -231,7 +230,7 @@ impl Session {
                                         self.pending_changes.insert(
                                             characteristic.id(),
                                             Box::new(move |v| {
-                                                let mut res = if delta.is_negative() {
+                                                let res = if delta.is_negative() {
                                                     v.saturating_sub(delta.saturating_neg() as u128)
                                                 } else {
                                                     v.saturating_add(delta as u128)
@@ -298,7 +297,6 @@ impl Session {
                     CommandResult::WriteCharacteristic(_, _, result) => {
                         Either::Right(format!("{:?}", result))
                     }
-                    _ => Either::Right("unknown result".to_string())
                 }
             } else {
                 Either::Right("no results".to_string())
