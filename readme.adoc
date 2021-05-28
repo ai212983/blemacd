@@ -2,38 +2,38 @@
 
 // Refs:
 :url-corebt: https://developer.apple.com/documentation/corebluetooth
+:url-corebt-wrapper: https://crates.io/crates/core_bluetooth
 
-This daemon is based on Apple's {url-corebt}[CoreBluetooth library].
+Blemacd is a macOS daemon to control BLE devices via Unix socket.
+This is a pet project mainly to control https://www.philips-hue.com/en-us/p/hue-white-ambiance-1-pack-e26/046677548490[Philips Hue White Ambiance BLE bulb]
+via https://www.keyboardmaestro.com/[Keyboard Maestro] and/or http://www.hammerspoon.org/[Hammerspoon].
 
-The project is a work in progress.There is a link:docs/usage.adoc[draft] on how to use it, but it's not implemented yet.
+It is based on Apple's {url-corebt}[CoreBluetooth library] and its {url-corebt-wrapper}[Rust wrapper].
 
-
-== Known problems
-
-* Platform-specific imports https://github.com/rust-analyzer/rust-analyzer/issues/6038[are not resolved by Rust analyzer]
-
+== link:docs/usage.adoc[Usage instructions]
 
 == Open questions
 
-* Docs organization, HUE instructions
-* Check if embedding Info.plist is required
+* Better docs and HUE instructions
 * Handle or limit multiple connections?
 ** Confirmation on command result (like status change)
-* How to terminate daemon? Should connection be able to do it?
 * Populating list of devices may be done by different API calls:
-** CentralManager::get_peripherals retrievePeripheralsWithIdentifiers
-** CentralManager::get_peripherals_with_services retrieveConnectedPeripheralsWithServices
-** CentralManager::scan scanForPeripheralsWithServices https://developer.apple.com/documentation/corebluetooth/cbcentralmanager/1518986-scanforperipherals
-* Looks like some peripherals can have multiple names
+** `CentralManager::get_peripherals`/ `retrievePeripheralsWithIdentifiers`
+** `CentralManager::get_peripherals_with_services`, `retrieveConnectedPeripheralsWithServices`
+** `CentralManager::scan scanForPeripheralsWithServices` (https://developer.apple.com/documentation/corebluetooth/cbcentralmanager/1518986-scanforperipherals[CoreBluetooth docs])
+* Looks like some peripherals can have multiple names?
 
 === Backlog
 
 * Better status (include path, number of connections and uptime?)
-* https://rust-cli.github.io/book/in-depth/signals.html[Signals handling], namely `Ctrl+C`
+* Better https://rust-cli.github.io/book/in-depth/signals.html[signals handling], namely `Ctrl+C`
 * Options for commands (like format output)
 * Run rustfmt
 * Homebrew formula
-* Colorize output [https://crates.io/crates/colored, https://docs.rs/termcolor, https://crates.io/crates/ansi_term]
+* Colorize output
+** https://crates.io/crates/colored
+** https://docs.rs/termcolor
+** https://crates.io/crates/ansi_term
 ** https://crates.io/crates/termion
 * Show info:
 ** UUID, RSSI in decibels
@@ -43,53 +43,33 @@ The project is a work in progress.There is a link:docs/usage.adoc[draft] on how 
 
 == References
 
-=== BLE
+=== core_bluetooth API wrapper
 
-==== core_bluetooth API wrapper
-* https://crates.io/crates/core_bluetooth[At crates.io]
+* {url-corebt-wrapper}[At crates.io]
 * https://docs.rs/core_bluetooth/0.1.0/core_bluetooth/#example[At docs.rs with example]
 * https://github.com/pingw33n/rust_core_bluetooth/blob/master/examples/mi_sensor.rs[Example code at Github]
 
 * https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/AboutCoreBluetooth/Introduction.html#//apple_ref/doc/uid/TP40013257[CoreBluetooth docs at Apple.com]
 
-==== Working with HUE
-
-* https://github.com/npaun/philble[Python 3 library at Github]
-* https://github.com/Mic92/hue-ble-ctl/blob/master/hue-ble-ctl.py[Another Python script at Github]
-* https://github.com/aknowles18/magic-wand/blob/master/philipsHueBluetoothInstructions.md[Discovered service and characteristics UIDS]
-
-==== Bluetooth CLI tools
+=== Bluetooth CLI tools
 
 * https://sensboston.github.io/BLEConsole/[BLE CLI for Windows]
 * https://github.com/toy/blueutil[Bluetooth (not BLE) CLI for OSX]
 
-=== Rust
+=== Daemonizing
 
-==== Async
-
-* https://book.async.rs/tutorial/index.html[async-std tutorial]
-* https://dev.to/x1957/stop-async-std-task-1oa7[How to stop std task]
-* https://rust-lang.github.io/async-book/02_execution/04_executor.html[Build Futures executor]
-* https://rust-lang.github.io/async-book/09_example/00_intro.html[Build concurrent web server]
-
-==== Interior mutability
-
-* https://doc.rust-lang.org/book/ch15-05-interior-mutability.html[Interior mutability with RefCell]
-* https://doc.rust-lang.org/std/cell/index.html#when-to-choose-interior-mutability[When to choose interior mutability]
-
-=== Daemonize
-
-https://conormanning.com/posts/compiling_info_plist_on_macos_with_rust/
 * https://stackoverflow.com/questions/61443052/rust-daemon-best-practices[How to daemonize at StackOverflow]
+
+== Known problems
+
+* Platform-specific imports https://github.com/rust-analyzer/rust-analyzer/issues/6038[are not resolved by Rust analyzer]
 
 == Licensing
 
 Licensed under either of
 
-* Apache License, Version 2.0
-(link:LICENSE-APACHE[LICENSE-APACHE] or http://www.apache.org/licenses/LICENSE-2.0)
-* MIT License
-(link:LICENSE-MIT[LICENSE-MIT] or http://opensource.org/licenses/MIT)
+* Apache License, Version 2.0 (link:LICENSE-APACHE[LICENSE-APACHE] or http://www.apache.org/licenses/LICENSE-2.0)
+* MIT License (link:LICENSE-MIT[LICENSE-MIT] or http://opensource.org/licenses/MIT)
 
 at your option.
 

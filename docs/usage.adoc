@@ -74,9 +74,7 @@ If you have any insight on this, please contact me.
 `--path /tmp/blemacd.sock`::
 Specifies the path for Unix Socket. `/tmp/blemacd.sock` is the default.
 
-== Usage
-
-=== Issuing commands
+== Issuing commands
 
 Commands are issued by writing text-based commands to the socket.
 I.e. with `nc`:
@@ -95,7 +93,7 @@ List all discovered peripherals and exit.
 ❯ nc -U /tmp/blemacd.sock <<< all
 ----
 
-=== Commands
+=== Commands list
 
 `status`::
 Returns daemon status
@@ -106,7 +104,7 @@ List of peripherals discovered
 `connected`::
 List of connected peripherals
 
-=== Addressing
+=== Addressing peripherals, services and characteristics
 
 Whenever input doesn't match a command, it is treated as a bluez-like path, `<peripheral>/<SERVICE>/<CHARACTERISTIC>`.
 

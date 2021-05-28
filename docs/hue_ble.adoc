@@ -71,3 +71,8 @@ Ok(())
 ----
 
 
+== References
+
+* https://github.com/npaun/philble[Python 3 library at Github]
+* https://github.com/Mic92/hue-ble-ctl/blob/master/hue-ble-ctl.py[Another Python script at Github]
+* https://github.com/aknowles18/magic-wand/blob/master/philipsHueBluetoothInstructions.md[Discovered service and characteristics UIDS]
