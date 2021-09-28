@@ -18,10 +18,6 @@ use log::*;
 use postage::{*, prelude::Sink};
 use uuid::Uuid;
 
-// on/off service for Philips Hue BLE
-const SERVICE: &str = "932c32bd-0000-47a2-835a-a8d455b859dd";
-
-
 // --- Implementation draft ----------------------------------------------------
 // https://stackoverflow.com/questions/27957103/how-do-i-create-a-heterogeneous-collection-of-objects
 // https://play.rust-lang.org/?version=stable&mode=debug&edition=2018&gist=308ca372ab13fdb3ecec6f4a3702895d
@@ -84,10 +80,39 @@ pub enum Command {
     ReadCharacteristic(Peripheral, Characteristic),
     WriteCharacteristic(Peripheral, Characteristic, Vec<u8>),
 }
+// TODO(df): Move to separate file?
 
 trait EventMatcher {
     fn match_event(&self, event: &CentralEvent) -> Option<CommandResult>;
 }
+
+
+struct PeripheralDiscoveredMatcher {
+    peripheral_id: BLE_Uuid,
+    handler: Box<dyn Fn(&Peripheral) -> CommandResult + Send + 'static>,
+}
+
+impl PeripheralDiscoveredMatcher {
+    fn new(peripheral: &Peripheral, handler: impl Fn(&Peripheral) -> CommandResult + Send + 'static) -> Self {
+        Self {
+            peripheral_id: peripheral.id(),
+            handler: Box::new(handler),
+        }
+    }
+}
+
+impl EventMatcher for PeripheralDiscoveredMatcher {
+    fn match_event(&self, event: &CentralEvent) -> Option<CommandResult> {
+        if let CentralEvent::PeripheralConnected { peripheral } = event {
+            if peripheral.id() == self.peripheral_id {
+                info!("connected peripheral {:?}", peripheral);
+                return Some((&self.handler)(&peripheral));
+            }
+        }
+        None
+    }
+}
+
 
 struct PeripheralConnectedMatcher {
     peripheral_id: BLE_Uuid,
@@ -423,7 +448,7 @@ impl InnerHandler {
                     ManagerState::PoweredOn => {
                         info!("bt is powered on, starting peripherals scan");
                         //TODO(df): Run different type of peripherals search depending on params, for example, by service uuid
-                        //central.get_peripherals_with_services(&[SERVICE.parse().unwrap()])
+                        // central.scan_with_options(ScanOptions::default().allow_duplicates(false));
                         central.scan();
                     }
                     _ => {}
@@ -434,7 +459,7 @@ impl InnerHandler {
                 advertisement_data,
                 rssi: _,
             } => {
-                debug!("[PeripheralDiscovered]: {}", self.peripherals.len());
+                info!("[PeripheralDiscovered]: {}", self.peripherals.len());
                 self.peripherals.insert(
                     peripheral.id(),
                     PeripheralInfo {
@@ -459,7 +484,6 @@ impl InnerHandler {
             CentralEvent::PeripheralConnected { peripheral } => {
                 self.connected_peripherals.insert(peripheral.clone());
                 info!("registered peripheral {}, total {}", peripheral.id(), self.connected_peripherals.len());
-                peripheral.discover_services_with_uuids(&[SERVICE.parse().unwrap()]);
             }
             CentralEvent::PeripheralDisconnected {
                 peripheral,
