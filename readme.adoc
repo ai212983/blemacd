@@ -30,7 +30,7 @@ It is based on Apple's {url-corebt}[CoreBluetooth library] and its {url-corebt-w
 * Options for commands (like format output)
 * Run rustfmt
 * Homebrew formula
-* Colorize output
+* Colorize output?
 ** https://crates.io/crates/colored
 ** https://docs.rs/termcolor
 ** https://crates.io/crates/ansi_term
@@ -39,6 +39,23 @@ It is based on Apple's {url-corebt}[CoreBluetooth library] and its {url-corebt-w
 ** UUID, RSSI in decibels
 ** advertisement data: Service UUIDs, connectable, local_name
 ** manufacturer data?
+
+////
+
+ https://github.com/BurntSushi/ripgrep/blob/master/doc/rg.1.txt.tpl
+ https://github.com/BurntSushi/ripgrep/blob/master/build.rs#L67
+
+ https://docs.asciidoctor.org/asciidoctor/latest/manpage-backend/
+ https://docs.asciidoctor.org/asciidoctor/latest/manpage-backend/#doctype
+
+Man pages
+
+https://docs.asciidoctor.org/asciidoctor/latest/manpage-backend/#doctype
+https://github.com/koekeishiya/yabai/blob/master/doc/yabai.asciidoc
+https://cmake.org/cmake/help/latest/manual/cmake-language.7.html
+https://github.com/BurntSushi/ripgrep/blob/master/doc/rg.1.txt.tpl
+
+////
 
 
 == References
