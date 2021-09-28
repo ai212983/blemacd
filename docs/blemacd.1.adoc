@@ -1,0 +1,72 @@
+= blemacd(1)
+Dimitri Fedorov <df.41356@gmail.com>
+:doctype: manpage
+:release-version: 0.1.0
+:man manual: blemacd manual
+:man source: blemacd {release-version}
+:man linkstyle: pass:[blue R < >]
+:page-layout: base
+
+== Name
+
+blemacd - BLE daemon for Mac OS
+
+== Synopsis
+
+*blemacd* [_SOCKET_PATH_]
+
+*nc* -U _SOCKET_PATH_ <<< _COMMAND_
+
+*nc* -U _SOCKET_PATH_ <<< _<PERIPHERAL>[/<SERVICE>[/<CHARACTERISTIC>[/<VALUE>]]]_
+
+== Commands
+
+status::
+Daemon status overview: uptime, connected peripherals, etc.
+
+connected::
+List of connected peripherals.
+
+== Definitions
+
+ <PERIPHERAL>       := <peripheral UUID substring> | ':'<public service UUID>
+ <SERVICE>          := <service UUID substring>
+ <CHARACTERISTIC>   := <characteristic UUID substring>['['<BYTE_SPAN>']']
+ <BYTE_SPAN>        := '['<index>']' | '['[<start>]..[<end>]']'
+ <VALUE>            := <VALUE_EXPRESSION>['['[<min>]..[<max>]']']
+ <VALUE_EXPRESSION> := [+|-]<integer> | !
+
+_<PERIPHERAL>_::
+Connect to peripheral by lookup UUID or public service.
+
+     nc -U /tmp/blemacd.sock <<< 9f69
+
+     nc -U /tmp/blemacd.sock <<< :fe0f
+
+_<PERIPHERAL>/<SERVICE>_::
+Locate a service for peripheral.
+
+     nc -U /tmp/blemacd.sock <<< 9f69/32bd
+
+     nc -U /tmp/blemacd.sock <<< :fe0f/32bd
+
+_<PERIPHERAL>/<SERVICE>/<CHARACTERISTIC>_::
+Read a specified characteristic value or its part.
+Result will be in hex format.
+
+     nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007
+
+     nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[5]
+
+     nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[..8]
+
+_<PERIPHERAL>/<SERVICE>/<CHARACTERISTIC>/<VALUE>_::
+Write a value to characteristic.
+Optionally clamp result to min and / or max value.
+
+     nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[5]/10
+
+     nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[5]/-25
+
+     nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[8..]/-30[153..454]
+
