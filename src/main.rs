@@ -99,7 +99,7 @@ impl Session {
         let input = &mut input.clone();
 
         loop {
-            match self.get_next_command(input, &results) {
+            match self.next_command(input, &results) {
                 Either::Left(command) => {
                     results.push((command.clone(), self.controller.execute(command).await));
                 }
@@ -111,7 +111,7 @@ impl Session {
     }
 
     /// This function contains main application logic
-    fn get_next_command(&mut self, input: &mut String, results: &Vec<(Command, CommandResult)>) -> Either<Command, String> {
+    fn next_command(&mut self, input: &mut String, results: &Vec<(Command, CommandResult)>) -> Either<Command, String> {
         if results.len() == 0 {
             if let InputToken::Address(token, _) = consume_token(input) {
                 Either::Left(match token.as_str() {
