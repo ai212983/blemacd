@@ -139,13 +139,7 @@ impl EventMatcher for ServicesDiscoveredMatcher {
             if peripheral.id() == self.peripheral_id {
                 return EventMatch::Result(CommandResult::FindService(
                     peripheral.clone(),
-                    if let Ok(services) = services {
-                        services.iter()
-                            .find(|s| s.id().to_string().contains(&self.uuid_substr))
-                            .map(|s| s.clone())
-                    } else {
-                        None
-                    }))
+                    find_by_id_substr(&self.uuid_substr, services)))
             }
         }
         EventMatch::None
@@ -169,19 +163,36 @@ impl CharacteristicsDiscoveredMatcher {
     }
 }
 
+trait HasId {
+    fn get_id(&self) -> Uuid;
+}
+
+impl HasId for Service {
+    fn get_id(&self) -> Uuid {
+        self.id().clone()
+    }
+}
+
+impl HasId for Characteristic {
+    fn get_id(&self) -> Uuid {
+        self.id().clone()
+    }
+}
+
+fn find_by_id_substr<T>(id_substr: &String, items: &Result<Vec<T>, Error>) -> Option<T> where T: HasId + Clone {
+    let id_substr = id_substr.as_str();
+    return items.as_ref().ok()
+        .and_then(|items| items.iter().find(|item| item.get_id().to_string().contains(id_substr)))
+        .map(|item| item.clone());
+}
+
 impl EventMatcher for CharacteristicsDiscoveredMatcher {
     fn matches(&self, event: &CentralEvent) -> EventMatch {
         if let CentralEvent::CharacteristicsDiscovered { peripheral, service, characteristics } = event {
             if peripheral.id() == self.peripheral_id && service.id() == self.service_id {
                 return EventMatch::Result(CommandResult::FindCharacteristic(
                     peripheral.clone(),
-                    if let Ok(characteristics) = characteristics {
-                        characteristics.iter()
-                            .find(|s| s.id().to_string().contains(&self.uuid_substr))
-                            .map(|s| s.clone())
-                    } else {
-                        None
-                    }))
+                    find_by_id_substr(&self.uuid_substr, characteristics)))
             }
         }
         EventMatch::None
