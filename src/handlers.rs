@@ -14,7 +14,6 @@ use postage::{*, prelude::Sink};
 use postage::mpsc::Sender;
 
 use crate::commands::*;
-use crate::event_matchers::*;
 
 pub struct Controller {
     sender: mpsc::Sender<(Command, oneshot::Sender<CommandResult>)>,
@@ -79,7 +78,7 @@ impl AsyncManager {
     }
 }
 
-type MatcherPair = (Box<dyn Fn(&CentralEvent) -> EventMatch + Send>, oneshot::Sender<CommandResult>);
+type MatcherPair = (Box<EventMatcher>, oneshot::Sender<CommandResult>);
 
 struct InnerHandler {
     started_at: Instant,
@@ -108,17 +107,17 @@ impl InnerHandler {
                 } else {
                     info!("no matching peripheral found, starting scan");
                     // TODO(df): Add timeout and Ctrl+C handling
-                    self.add_matcher(sender, PeripheralDiscoveredMatcherByServiceUUID::new(uuid.clone()));
+                    self.add_matcher(sender, command.get_matcher());
                     central.scan_with_options(ScanOptions::default().include_services(&vec![uuid]));
                 }
             }
-            Command::ConnectToPeripheral((peripheral, advertisement_data)) => {
+            Command::ConnectToPeripheral(ref peripheral, ref advertisement_data) => {
                 let id = peripheral.id().clone();
                 if let Some(result) = self.get_peripheral(id) {
                     sender.blocking_send(CommandResult::ConnectToPeripheral(result.0)).unwrap();
                 } else {
                     self.advertisements.insert(id, advertisement_data.clone());
-                    self.add_matcher(sender, PeripheralConnectedMatcher::new(&peripheral));
+                    self.add_matcher(sender, command.get_matcher());
                     central.connect(&peripheral);
                 }
             }
@@ -134,21 +133,21 @@ impl InnerHandler {
                 self.peripherals.remove(&uuid);
                 self.advertisements.remove(&uuid);
             }
-            Command::FindService(peripheral, uuid_substr) => {
-                self.add_matcher(sender, ServicesDiscoveredMatcher::new(&peripheral, uuid_substr));
+            Command::FindService(ref peripheral, _) => {
+                self.add_matcher(sender, command.get_matcher());
                 peripheral.discover_services();
             }
-            Command::FindCharacteristic(peripheral, service, uuid_substr, _) => {
-                self.add_matcher(sender, CharacteristicsDiscoveredMatcher::new(&peripheral, &service, uuid_substr));
-                peripheral.discover_characteristics(&service);
+            Command::FindCharacteristic(ref peripheral, ref service, _, _) => {
+                self.add_matcher(sender, command.get_matcher());
+                peripheral.discover_characteristics(service);
             }
-            Command::ReadCharacteristic(peripheral, characteristic) => {
-                self.add_matcher(sender, CharacteristicValueMatcher::new(&peripheral, &characteristic));
-                peripheral.read_characteristic(&characteristic);
+            Command::ReadCharacteristic(ref peripheral, ref characteristic) => {
+                self.add_matcher(sender, command.get_matcher());
+                peripheral.read_characteristic(characteristic);
             }
-            Command::WriteCharacteristic(peripheral, characteristic, data) => {
-                self.add_matcher(sender, WriteCharacteristicResultMatcher::new(&peripheral, &characteristic));
-                peripheral.write_characteristic(&characteristic, &data, WriteKind::WithResponse);
+            Command::WriteCharacteristic(ref peripheral, ref characteristic, ref data) => {
+                self.add_matcher(sender, command.get_matcher());
+                peripheral.write_characteristic(characteristic, data, WriteKind::WithResponse);
             }
             Command::ListPeripherals => sender.blocking_send(CommandResult::ListPeripherals({
                 self.peripherals.values().into_iter()
@@ -215,8 +214,8 @@ impl InnerHandler {
         }
     }
 
-    fn add_matcher(&mut self, sender: oneshot::Sender<CommandResult>, matcher: impl EventMatcher + Send + 'static) {
-        self.matchers.push((Box::new(move |event| matcher.matches(event)), sender));
+    fn add_matcher(&mut self, sender: oneshot::Sender<CommandResult>, matcher: Box<EventMatcher>) {
+        self.matchers.push((matcher, sender));
     }
 
     fn find_connected_peripheral_by_service(&self, uuid: Uuid) -> Option<(Peripheral, AdvertisementData)> {

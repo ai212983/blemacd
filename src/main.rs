@@ -148,8 +148,8 @@ impl Session {
                         ))
                     }
                     CommandResult::FindPeripheral(info) =>
-                        if let Some(i) = info {
-                            Either::Left(Command::ConnectToPeripheral(i.clone()))
+                        if let Some((p, a)) = info {
+                            Either::Left(Command::ConnectToPeripheral(p.clone(), a.clone()))
                         } else {
                             Either::Right("peripheral match not found".to_string())
                         },
