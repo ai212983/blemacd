@@ -138,7 +138,7 @@ impl Session {
                     }
                     CommandResult::ListPeripherals(peripherals) => {
                         let descriptions = peripherals.into_iter()
-                            .map(move |(p, a)|
+                            .map(move |(p, _a)|
                                 format!("{:?}", p))
                             .collect::<Vec<String>>();
                         Either::Right(format!(
