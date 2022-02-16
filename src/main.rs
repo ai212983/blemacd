@@ -154,7 +154,7 @@ impl Session {
                             Either::Right("peripheral match not found".to_string())
                         },
                     CommandResult::ConnectToPeripheral(peripheral) => {
-                        info!("connected to peripheral {:?}", peripheral);
+                        info!("peripheral located '{:?}'", peripheral);
                         if input.is_empty() {
                             let cmt = results.iter().find_map(|(command, _)|
                                 match command {
@@ -163,10 +163,10 @@ impl Session {
                                     _ => None
                                 });
 
-                            Either::Right(format!("connected to peripheral {:?} {}", peripheral, cmt.unwrap_or("".to_string())))
+                            Either::Right(format!("peripheral [{}] {}", peripheral.id(), cmt.unwrap_or("".to_string())))
                         } else {
                             if let InputToken::Address(token, _) = consume_token(input) {
-                                info!("connected to peripheral, searching for Service {:?}", input);
+                                info!("peripheral [{}] searching for service {:?}", peripheral.id(), input);
                                 Either::Left(Command::FindService(peripheral.clone(), token.to_string()))
                             } else {
                                 Either::Right("connected to peripheral".to_string())
@@ -176,7 +176,7 @@ impl Session {
                     CommandResult::FindService(peripheral, service) => {
                         if let Some(service) = service {
                             if let InputToken::Address(token, range) = consume_token(input) {
-                                info!("service found: {:?}, searching for Characteristic: {:?}", service, token);
+                                info!("service found: '{:?}', searching for characteristic: {:?}", service, token);
                                 let uuid = uuid::Uuid::new_v4();
                                 if let Some(range) = range {
                                     self.pending_ranges.insert(uuid, range);
@@ -191,7 +191,7 @@ impl Session {
                     }
                     CommandResult::FindCharacteristic(peripheral, characteristic) => {
                         if let Some(characteristic) = characteristic {
-                            info!("characteristic found: {:?}", characteristic);
+                            info!("characteristic found '{:?}'", characteristic);
                             let pending_range = if let Command::FindCharacteristic(_, _, _, uuid) = command {
                                 self.pending_ranges.remove(uuid)
                             } else {
@@ -257,7 +257,7 @@ impl Session {
                             let range = self.ranges.remove(id);
                             let sliced_value = get_slice(value, range);
                             if let Some((_, change)) = self.pending_changes.remove_entry(id) {
-                                info!("characteristic read: {:?}, now updating", characteristic);
+                                info!("characteristic [{}] read ({}), now updating", characteristic.id(), hex::encode(sliced_value));
                                 Either::Left({
                                     debug!("sliced value: {:?}", sliced_value);
                                     let updated_slice = change(bytes_to_u128(&sliced_value.to_vec())).to_le_bytes().to_vec();
@@ -270,7 +270,7 @@ impl Session {
                                         peripheral.clone(), characteristic.clone(), replace_slice(value, &updated_slice, range))
                                 })
                             } else {
-                                info!("characteristic read: {:?} (range {:?})", characteristic, range);
+                                info!("characteristic [{}] read range {:?}", characteristic.id(), range);
                                 Either::Right(hex::encode(sliced_value))
                             }
                         } else {
@@ -353,7 +353,7 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                     AsyncWriteExt::write_all(&mut stream, reply.as_bytes())
                         .await.ok();
                 }
-                info!("peer #{} disconnected, currently connected peers: {}", idx, peers.len());
+                info!("peer #{} disconnected, connected peers: {}", idx, peers.len());
                 continue;
             }
         };

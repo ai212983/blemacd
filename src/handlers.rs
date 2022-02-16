@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::process::exit;
-use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use async_std::{task, task::JoinHandle};
@@ -106,7 +105,6 @@ impl EventMatcher for PeripheralConnectedMatcher {
     fn matches(&self, event: &CentralEvent) -> EventMatch {
         if let CentralEvent::PeripheralConnected { peripheral } = event {
             if peripheral.id() == self.peripheral_id {
-                info!("connected peripheral {:?}", peripheral);
                 return EventMatch::Next(Command::RegisterConnectedPeripheral(peripheral.clone()))
             }
         } else if let CentralEvent::PeripheralConnectFailed { peripheral, error } = event {
@@ -285,8 +283,8 @@ impl AsyncManager {
                         state: ManagerState::Unknown,
                         command_sender,
                         matchers: vec![],
-                        connected_peripherals: Default::default(),
-                        peripheral_ads: Default::default(),
+                        peripherals: Default::default(),
+                        advertisements: Default::default(),
                     };
                     let mut command_receiver = command_receiver.fuse();
                     let mut central_receiver = central_receiver.fuse();
@@ -314,8 +312,8 @@ struct InnerHandler {
     state: ManagerState,
     command_sender: Sender<(Command, oneshot::Sender<CommandResult>)>,
     matchers: Vec<MatcherPair>,
-    connected_peripherals: HashMap<Uuid, Peripheral>,
-    peripheral_ads: HashMap<Uuid, AdvertisementData>,
+    peripherals: HashMap<Uuid, Peripheral>,
+    advertisements: HashMap<Uuid, AdvertisementData>,
 }
 
 impl InnerHandler {
@@ -324,17 +322,17 @@ impl InnerHandler {
             Command::GetStatus => {
                 sender.blocking_send(CommandResult::GetStatus(
                     Duration::new(self.started_at.elapsed().as_secs(), 0),
-                    Some(self.connected_peripherals.len()), //TODO(df): Update status output
+                    Some(self.peripherals.len()), //TODO(df): Update status output
                 )).unwrap()
             }
             Command::FindPeripheralByService(uuid) => {
-                info!("finding peripheral with service '{:?}'", uuid);
+                info!("looking for peripheral with service [{}]", uuid);
                 if let Some(result) = self.find_connected_peripheral_by_service(uuid.clone()) {
-                    info!("found already connected peripheral '{:?}'", result.0);
+                    info!("found already connected peripheral [{}]", result.0.id());
                     central.cancel_scan();
                     sender.blocking_send(CommandResult::FindPeripheral(Some(result))).unwrap();
                 } else {
-                    info!("no connected peripheral found, starting scan");
+                    info!("no matching peripheral found, starting scan");
                     // TODO(df): Add timeout and Ctrl+C handling
                     self.add_matcher(sender, PeripheralDiscoveredMatcherByServiceUUID::new(uuid.clone()));
                     central.scan_with_options(ScanOptions::default().include_services(&vec![uuid]));
@@ -345,20 +343,22 @@ impl InnerHandler {
                 if let Some(result) = self.get_peripheral(id) {
                     sender.blocking_send(CommandResult::ConnectToPeripheral(result.0)).unwrap();
                 } else {
-                    self.peripheral_ads.insert(id, advertisement_data.clone());
+                    self.advertisements.insert(id, advertisement_data.clone());
                     self.add_matcher(sender, PeripheralConnectedMatcher::new(&peripheral));
                     central.connect(&peripheral);
                 }
             }
             Command::RegisterConnectedPeripheral(peripheral) => {
                 let id = peripheral.id().clone();
-                info!("registered peripheral {}, total {}", id, self.connected_peripherals.len());
-                self.connected_peripherals.insert(id, peripheral.clone());
+                self.peripherals.insert(id, peripheral.clone());
+                info!("peripheral [{}]{} registered, total {}", id,
+                    self.advertisements.get(&id).and_then(|ad| ad.local_name()).map_or(String::new(), |s| format!(" ({})", s)),
+                    self.peripherals.len());
                 sender.blocking_send(CommandResult::ConnectToPeripheral(peripheral)).unwrap();
             }
             Command::UnregisterConnectedPeripheral(uuid) => {
-                self.connected_peripherals.remove(&uuid);
-                self.peripheral_ads.remove(&uuid);
+                self.peripherals.remove(&uuid);
+                self.advertisements.remove(&uuid);
             }
             Command::FindService(peripheral, uuid_substr) => {
                 self.add_matcher(sender, ServicesDiscoveredMatcher::new(&peripheral, uuid_substr));
@@ -377,8 +377,8 @@ impl InnerHandler {
                 peripheral.write_characteristic(&characteristic, &data, WriteKind::WithResponse);
             }
             Command::ListPeripherals => sender.blocking_send(CommandResult::ListPeripherals({
-                self.connected_peripherals.values().into_iter()
-                    .map(|p| return (p.clone(), self.peripheral_ads.get(&p.id()).unwrap().clone()))
+                self.peripherals.values().into_iter()
+                    .map(|p| return (p.clone(), self.advertisements.get(&p.id()).unwrap().clone()))
                     .collect()
             })).unwrap()
         };
@@ -415,21 +415,19 @@ impl InnerHandler {
                 peripheral,
                 error: _,
             } => {
-                self.connected_peripherals.remove(&peripheral.id());
-                info!("unregistered peripheral {}, total {}", peripheral.id(), self.connected_peripherals.len());
+                self.peripherals.remove(&peripheral.id());
+                info!("unregistered peripheral {}, total {}", peripheral.id(), self.peripherals.len());
             }
             _ => {}
         }
         let mut command_sender = self.command_sender.clone();
         let mut i = 0;
         while i < self.matchers.len() {
-            info!("handle_event: {:?}", event);
             let result = self.matchers[i].0(event);
             if result.is_none() {
                 i += 1;
             } else {
                 let (_, mut sender) = self.matchers.remove(i);
-                info!("removing matcher #{}", i);
                 match result {
                     EventMatch::Next(command) => {
                         command_sender.try_send((command, sender)).ok();
@@ -444,22 +442,20 @@ impl InnerHandler {
     }
 
     fn add_matcher(&mut self, sender: oneshot::Sender<CommandResult>, matcher: impl EventMatcher + Send + 'static) {
-        let item: MatcherPair = (Box::new(move |event| matcher.matches(event)), sender);
-        info!("adding matcher" );
-        self.matchers.push(item);
+        self.matchers.push((Box::new(move |event| matcher.matches(event)), sender));
     }
 
     fn find_connected_peripheral_by_service(&self, uuid: Uuid) -> Option<(Peripheral, AdvertisementData)> {
-        self.peripheral_ads.iter().find(|(_, ad)|
+        self.advertisements.iter().find(|(_, ad)|
             ad.service_uuids().iter().find(|&service_uuid| service_uuid.eq(&uuid)).is_some())
             .and_then(|(peripheral_uuid, ad)| {
-                Some((self.connected_peripherals.get(peripheral_uuid).unwrap().clone(), ad.clone()))
+                Some((self.peripherals.get(peripheral_uuid).unwrap().clone(), ad.clone()))
             })
     }
 
     fn get_peripheral(&self, uuid: Uuid) -> Option<(Peripheral, AdvertisementData)> {
-        if let Some(peripheral) = self.connected_peripherals.get(&uuid) {
-            Some((peripheral.clone(), self.peripheral_ads.get(&peripheral.id()).unwrap().clone()))
+        if let Some(peripheral) = self.peripherals.get(&uuid) {
+            Some((peripheral.clone(), self.advertisements.get(&peripheral.id()).unwrap().clone()))
         } else {
             None
         }
