@@ -154,7 +154,6 @@ impl Session {
                             Either::Right("peripheral match not found".to_string())
                         },
                     CommandResult::ConnectToPeripheral(peripheral) => {
-                        //TODO(df): Proper connection logging
                         info!("connected to peripheral {:?}", peripheral);
                         if input.is_empty() {
                             let cmt = results.iter().find_map(|(command, _)|
