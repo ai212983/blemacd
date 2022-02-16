@@ -27,8 +27,7 @@ enum Void {}
 const SOCKET_PATH: &str = "/tmp/blemacd.sock";
 
 const COMMAND_STATUS: &str = "status";
-const COMMAND_ALL_PERIPHERALS: &str = "all";
-const COMMAND_CONNECTED_PERIPHERALS: &str = "connected";
+const COMMAND_PERIPHERALS: &str = "peripherals";
 
 async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     // https://docs.rs/async-std/0.99.3/async_std/os/unix/net/struct.UnixListener.html
@@ -77,6 +76,7 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
     Ok(())
 }
 
+
 struct Session {
     controller: Controller,
     pending_changes: HashMap<Uuid, Box<dyn Fn(u128) -> u128 + Send + 'static>>,
@@ -116,13 +116,11 @@ impl Session {
             if let InputToken::Address(token, _) = consume_token(input) {
                 Either::Left(match token.as_str() {
                     COMMAND_STATUS => Command::GetStatus,
-                    COMMAND_ALL_PERIPHERALS => Command::ListPeripherals,
-                    COMMAND_CONNECTED_PERIPHERALS => Command::ListConnectedPeripherals,
+                    COMMAND_PERIPHERALS => Command::ListPeripherals,
                     _ => {
                         info!("request for peripheral: '{:?}'", token);
                         if token.starts_with(":") {
-                            let uuid = hex::decode(token.get(1..).unwrap()).unwrap();
-                            Command::FindPeripheralByService(Uuid::from_slice(uuid.as_ref()))
+                            Command::FindPeripheralByService(token.get(1..).unwrap().parse().unwrap())
                         } else {
                             Command::FindPeripheral(token.to_string())
                         }
@@ -136,40 +134,31 @@ impl Session {
                 match result {
                     CommandResult::GetStatus(uptime, peripherals) => {
                         let mut status = format!("uptime {}", humantime::format_duration(*uptime));
-                        if let Some((all, connected)) = peripherals {
-                            status = status + &*format!(", {} peripherals detected, {} connected", all, connected);
+                        if let Some(count) = peripherals {
+                            status = status + &*format!(", {} peripherals connected", count);
                         }
                         Either::Right(status)
                     }
                     CommandResult::ListPeripherals(peripherals) => {
-                        let peripherals = peripherals.values()
-                            .map(|p| format!("{:.1}", p))
+                        let descriptions = peripherals.into_iter()
+                            .map(move |(p, a)|
+                                format!("{:?}", p))
                             .collect::<Vec<String>>();
                         Either::Right(format!(
-                            "{} peripherals total\n{}",
-                            peripherals.len(),
-                            peripherals.join("\n")
+                            "{} peripherals connected\n{}",
+                            descriptions.len(),
+                            descriptions.join("\n")
                         ))
                     }
-                    CommandResult::ListConnectedPeripherals(peripherals) => {
-                        let peripherals = peripherals.values()
-                            .map(|p| format!("{:.1}", p))
-                            .collect::<Vec<String>>();
-                        Either::Right(format!(
-                            "{} connected peripherals\n{}",
-                            peripherals.len(),
-                            peripherals.join("\n")
-                        ))
-                    }
-                    CommandResult::FindPeripheral(peripheral) =>
-                        if let Some(peripheral) = peripheral {
-                            Either::Left(Command::ConnectToPeripheral(peripheral.peripheral.clone()))
+                    CommandResult::FindPeripheral(info) =>
+                        if let Some(i) = info {
+                            Either::Left(Command::ConnectToPeripheral(i.clone()))
                         } else {
                             Either::Right("peripheral match not found".to_string())
                         },
-                    CommandResult::ConnectToPeripheral(info) => {
+                    CommandResult::ConnectToPeripheral(peripheral) => {
                         //TODO(df): Proper connection logging
-                        info!("connected to peripheral {:?}", info);
+                        info!("connected to peripheral {:?}", peripheral);
                         if input.is_empty() {
                             let cmt = results.iter().find_map(|(command, _)|
                                 match command {
@@ -180,11 +169,11 @@ impl Session {
                                     _ => None
                                 });
 
-                            Either::Right(format!("connected to peripheral {} {}", info, cmt.unwrap_or("".to_string())))
+                            Either::Right(format!("connected to peripheral {:?} {}", peripheral, cmt.unwrap_or("".to_string())))
                         } else {
                             if let InputToken::Address(token, _) = consume_token(input) {
                                 info!("Connected to peripheral, searching for Service {:?}", input);
-                                Either::Left(Command::FindService(info.peripheral.clone(), token.to_string()))
+                                Either::Left(Command::FindService(peripheral.clone(), token.to_string()))
                             } else {
                                 Either::Right("connected to peripheral".to_string())
                             }
@@ -198,7 +187,8 @@ impl Session {
                                 if let Some(range) = range {
                                     self.pending_ranges.insert(uuid, range);
                                 }
-                                Either::Left(Command::FindCharacteristic(peripheral.clone(), service.clone(), token.to_string(), uuid))
+                                Either::Left(Command::FindCharacteristic(peripheral.clone(), service.clone(), token.to_string(),
+                                                                         Uuid::from_bytes(*uuid.as_bytes())))
                             } else {
                                 Either::Right(format!("service found: {:?}", service))
                             }
@@ -210,7 +200,7 @@ impl Session {
                         if let Some(characteristic) = characteristic {
                             info!("characteristic found: {:?}", characteristic);
                             let pending_range = if let Command::FindCharacteristic(_, _, _, uuid) = command {
-                                self.pending_ranges.remove(uuid)
+                                self.pending_ranges.remove(&uuid::Uuid::from_bytes(uuid.bytes())) //TODO(df): implement `from`
                             } else {
                                 panic!("incorrect command mapping");
                             };
