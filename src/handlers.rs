@@ -49,24 +49,22 @@ pub enum Command {
 }
 // OPTIMIZE(df): Move matchers to separate file?
 
-enum EventMatchResult {
+enum EventMatch {
     Next(Command),
     Result(CommandResult),
     None,
 }
 
-impl EventMatchResult {
+impl EventMatch {
     fn is_none(&self) -> bool {
-        matches!(*self, EventMatchResult::None)
+        matches!(*self, EventMatch::None)
     }
 }
 
+// it is critical EventMatchers are stateless
+
 trait EventMatcher {
-    // FROM_HERE(df): Result of event matching can be not only CommandResult.
-    // We can send another Command, for example on event match.
-    // Thus, we have to decouple sending `CommandResult` from successful event matching.
-    // as an option, pass Sender to created Matcher and return boolean on successful match.
-    fn matches(&self, event: &CentralEvent) -> EventMatchResult;
+    fn matches(&self, event: &CentralEvent) -> EventMatch;
 }
 
 struct PeripheralDiscoveredMatcherByUUIDSubstr {
@@ -80,14 +78,14 @@ impl PeripheralDiscoveredMatcherByUUIDSubstr {
 }
 
 impl EventMatcher for PeripheralDiscoveredMatcherByUUIDSubstr {
-    fn matches(&self, event: &CentralEvent) -> EventMatchResult {
+    fn matches(&self, event: &CentralEvent) -> EventMatch {
         if let CentralEvent::PeripheralDiscovered { peripheral, advertisement_data, rssi: _ } = event {
             if peripheral.id().to_string().contains(&self.uuid_substr) {
                 info!("discovered {:?}", peripheral);
-                return EventMatchResult::Result(CommandResult::FindPeripheral(Some((peripheral.clone(), advertisement_data.clone()))))
+                return EventMatch::Result(CommandResult::FindPeripheral(Some((peripheral.clone(), advertisement_data.clone()))))
             }
         }
-        EventMatchResult::None
+        EventMatch::None
     }
 }
 
@@ -103,16 +101,16 @@ impl PeripheralDiscoveredMatcherByServiceUUIDSubstr {
 }
 
 impl EventMatcher for PeripheralDiscoveredMatcherByServiceUUIDSubstr {
-    fn matches(&self, event: &CentralEvent) -> EventMatchResult {
+    fn matches(&self, event: &CentralEvent) -> EventMatch {
         info!("Incoming event: {:?}", event);
         if let CentralEvent::PeripheralDiscovered { peripheral, advertisement_data, rssi: _ } = event {
             info!("discovered {:?}, matching against {}", peripheral, self.uuid_substr);
             if advertisement_data.service_uuids().iter()
                 .find(|uuid| uuid.to_string().contains(&self.uuid_substr)).is_some() {
-                return EventMatchResult::Result(CommandResult::FindPeripheral(Some((peripheral.clone(), advertisement_data.clone()))))
+                return EventMatch::Result(CommandResult::FindPeripheral(Some((peripheral.clone(), advertisement_data.clone()))))
             }
         }
-        EventMatchResult::None
+        EventMatch::None
     }
 }
 
@@ -129,21 +127,21 @@ impl PeripheralConnectedMatcher {
 }
 
 impl EventMatcher for PeripheralConnectedMatcher {
-    fn matches(&self, event: &CentralEvent) -> EventMatchResult {
+    fn matches(&self, event: &CentralEvent) -> EventMatch {
         if let CentralEvent::PeripheralConnected { peripheral } = event {
             if peripheral.id() == self.peripheral_id {
                 info!("connected peripheral {:?}", peripheral);
-                return EventMatchResult::Next(Command::RegisterConnectedPeripheral(peripheral.clone()))
+                return EventMatch::Next(Command::RegisterConnectedPeripheral(peripheral.clone()))
             }
         } else if let CentralEvent::PeripheralConnectFailed { peripheral, error } = event {
             if peripheral.id() == self.peripheral_id {
                 let id = peripheral.id().clone();
                 // TODO(df): send command to unregister ad data
                 error!("failed to connect to peripheral {:?}: {:?}", peripheral, error);
-                return EventMatchResult::Next(Command::UnregisterConnectedPeripheral(id))
+                return EventMatch::Next(Command::UnregisterConnectedPeripheral(id))
             }
         }
-        EventMatchResult::None
+        EventMatch::None
     }
 }
 
@@ -163,10 +161,10 @@ impl ServicesDiscoveredMatcher {
 }
 
 impl EventMatcher for ServicesDiscoveredMatcher {
-    fn matches(&self, event: &CentralEvent) -> EventMatchResult {
+    fn matches(&self, event: &CentralEvent) -> EventMatch {
         if let CentralEvent::ServicesDiscovered { peripheral, services } = event {
             if peripheral.id() == self.peripheral_id {
-                return EventMatchResult::Result(CommandResult::FindService(
+                return EventMatch::Result(CommandResult::FindService(
                     peripheral.clone(),
                     if let Ok(services) = services {
                         services.iter()
@@ -177,7 +175,7 @@ impl EventMatcher for ServicesDiscoveredMatcher {
                     }))
             }
         }
-        EventMatchResult::None
+        EventMatch::None
     }
 }
 
@@ -199,10 +197,10 @@ impl CharacteristicsDiscoveredMatcher {
 }
 
 impl EventMatcher for CharacteristicsDiscoveredMatcher {
-    fn matches(&self, event: &CentralEvent) -> EventMatchResult {
+    fn matches(&self, event: &CentralEvent) -> EventMatch {
         if let CentralEvent::CharacteristicsDiscovered { peripheral, service, characteristics } = event {
             if peripheral.id() == self.peripheral_id && service.id() == self.service_id {
-                return EventMatchResult::Result(CommandResult::FindCharacteristic(
+                return EventMatch::Result(CommandResult::FindCharacteristic(
                     peripheral.clone(),
                     if let Ok(characteristics) = characteristics {
                         characteristics.iter()
@@ -213,7 +211,7 @@ impl EventMatcher for CharacteristicsDiscoveredMatcher {
                     }))
             }
         }
-        EventMatchResult::None
+        EventMatch::None
     }
 }
 
@@ -232,16 +230,16 @@ impl CharacteristicValueMatcher {
 }
 
 impl EventMatcher for CharacteristicValueMatcher {
-    fn matches(&self, event: &CentralEvent) -> EventMatchResult {
+    fn matches(&self, event: &CentralEvent) -> EventMatch {
         if let CentralEvent::CharacteristicValue { peripheral, characteristic, value } = event {
             if peripheral.id() == self.peripheral_id && characteristic.id() == self.characteristic_id {
-                return EventMatchResult::Result(CommandResult::ReadCharacteristic(
+                return EventMatch::Result(CommandResult::ReadCharacteristic(
                     peripheral.clone(),
                     characteristic.clone(),
                     if let Ok(value) = value { Some(value.clone()) } else { None }))
             }
         }
-        EventMatchResult::None
+        EventMatch::None
     }
 }
 
@@ -260,14 +258,14 @@ impl WriteCharacteristicResultMatcher {
 }
 
 impl EventMatcher for WriteCharacteristicResultMatcher {
-    fn matches(&self, event: &CentralEvent) -> EventMatchResult {
+    fn matches(&self, event: &CentralEvent) -> EventMatch {
         if let CentralEvent::WriteCharacteristicResult { peripheral, characteristic, result } = event {
             if peripheral.id() == self.peripheral_id && characteristic.id() == self.characteristic_id {
-                return EventMatchResult::Result(
+                return EventMatch::Result(
                     CommandResult::WriteCharacteristic(peripheral.clone(), characteristic.clone(), result.clone()));
             }
         }
-        EventMatchResult::None
+        EventMatch::None
     }
 }
 
@@ -320,16 +318,6 @@ impl AsyncManager {
                     // Events handler loop
                     loop {
                         select! {
-
-                            // FROM_HERE(df):
-                            // Current execution flow for async commands:
-                            // in handler.execute:
-                            // change struct state via &mut self -> add matcher -> matcher sends CommandResult to the channel -> CommandResult is returned to caller
-                            // the problem is we may want to process CommandResult again and issue a new command before returning result
-
-                            // `execute` can't return CommandResult directly, it has to be sent to caller via oneshot channel
-                            // so we have to tweak matcher
-
                             command = command_receiver.next() => if let Some((command, sender)) = command {
                                 handler.execute(command, sender, &central)
                             },
@@ -344,7 +332,7 @@ impl AsyncManager {
     }
 }
 
-type MatcherPair = (Box<dyn Fn(&CentralEvent) -> EventMatchResult + Send>, oneshot::Sender<CommandResult>);
+type MatcherPair = (Box<dyn Fn(&CentralEvent) -> EventMatch + Send>, oneshot::Sender<CommandResult>);
 
 struct InnerHandler {
     started_at: Instant,
@@ -453,8 +441,11 @@ impl InnerHandler {
                         // for example, by service uuid:
                         // central.scan_with_options(ScanOptions::default().allow_duplicates(false));
 
+
                         // this will not work on MacOSX 12.1, see https://stackoverflow.com/a/70657368/1016019
-                        central.scan();
+                        // central.scan();
+
+                        // FROM_HERE(df): We have to set up status or ready flag or something, then start scanning once we know EXACTLY service UUID we are aiming for
                     }
                     _ => {}
                 }
@@ -521,13 +512,13 @@ impl InnerHandler {
                 let (_, mut sender) = self.matchers.remove(i);
                 info!("removing matcher #{}", i);
                 match result {
-                    EventMatchResult::Next(command) => {
+                    EventMatch::Next(command) => {
                         command_sender.try_send((command, sender)).ok();
                     }
-                    EventMatchResult::Result(result) => {
+                    EventMatch::Result(result) => {
                         sender.blocking_send(result).unwrap();
                     }
-                    EventMatchResult::None => {}
+                    EventMatch::None => {}
                 }
             }
         }

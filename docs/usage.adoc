@@ -108,6 +108,9 @@ List of connected peripherals
 
 Whenever input doesn't match a command, it is treated as a bluez-like path, `<peripheral>/<SERVICE>/<CHARACTERISTIC>`.
 
+[WARNING]
+.This is disabled until Apple fix https://stackoverflow.com/a/70657368/1016019[background BLE scanning] (supposedly in macOS 12.3).
+====
 `<peripheral>`::
 Daemon will try to match input string to peripheral UUID and if there is a match, will connect to that peripheral.
 
@@ -116,6 +119,7 @@ Daemon will try to match input string to peripheral UUID and if there is a match
 ❯ nc -U /tmp/blemacd.sock <<< f69
 connected to peripheral [472df789-71f0-4d87-a47f-4e818ba79f69] (Hue ambiance lamp)
 ----
+====
 
 It is also possible to connect to peripheral by service UUID:
 
