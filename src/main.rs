@@ -119,7 +119,7 @@ impl Session {
                     COMMAND_PERIPHERALS => Command::ListPeripherals,
                     _ => {
                         let uuid = Uuid::from_slice(hex::decode(token).unwrap().as_slice());
-                        info!("request for peripheral by service UUID: '{:?}'", hex::encode(uuid.shorten()));
+                        info!("request for peripheral by service UUID: [{}]", hex::encode(uuid.shorten()));
                         Command::FindPeripheralByService(uuid)
                     }
                 })
@@ -167,7 +167,7 @@ impl Session {
                             Either::Right(format!("connected to peripheral {:?} {}", peripheral, cmt.unwrap_or("".to_string())))
                         } else {
                             if let InputToken::Address(token, _) = consume_token(input) {
-                                info!("Connected to peripheral, searching for Service {:?}", input);
+                                info!("connected to peripheral, searching for Service {:?}", input);
                                 Either::Left(Command::FindService(peripheral.clone(), token.to_string()))
                             } else {
                                 Either::Right("connected to peripheral".to_string())

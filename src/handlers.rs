@@ -80,12 +80,9 @@ impl PeripheralDiscoveredMatcherByServiceUUID {
 
 impl EventMatcher for PeripheralDiscoveredMatcherByServiceUUID {
     fn matches(&self, event: &CentralEvent) -> EventMatch {
-        info!("Incoming event: {:?}", event);
         if let CentralEvent::PeripheralDiscovered { peripheral, advertisement_data, rssi: _ } = event {
-            info!("discovered {:?}, matching against {}", peripheral, self.uuid);
             if advertisement_data.service_uuids().iter()
                 .find(|&uuid| uuid.eq(&self.uuid)).is_some() {
-                info!("event matched, returning result");
                 return EventMatch::Result(CommandResult::FindPeripheral(Some((peripheral.clone(), advertisement_data.clone()))))
             }
         }
@@ -258,7 +255,7 @@ impl Controller {
         if let Some(reply) = receiver.next().await {
             reply
         } else {
-            panic!("Unexpected 'None' result, sender was prematurely dropped?");
+            panic!("unexpected 'None' result, sender was prematurely dropped?");
         }
     }
 }
@@ -331,12 +328,13 @@ impl InnerHandler {
                 )).unwrap()
             }
             Command::FindPeripheralByService(uuid) => {
-                info!("Finding peripheral with service '{:?}'", uuid);
+                info!("finding peripheral with service '{:?}'", uuid);
                 if let Some(result) = self.find_connected_peripheral_by_service(uuid.clone()) {
-                    info!("Found connected peripheral '{:?}', stopping Bluetooth scan", result.0);
+                    info!("found already connected peripheral '{:?}'", result.0);
                     central.cancel_scan();
                     sender.blocking_send(CommandResult::FindPeripheral(Some(result))).unwrap();
                 } else {
+                    info!("no connected peripheral found, starting scan");
                     // TODO(df): Add timeout and Ctrl+C handling
                     self.add_matcher(sender, PeripheralDiscoveredMatcherByServiceUUID::new(uuid.clone()));
                     central.scan_with_options(ScanOptions::default().include_services(&vec![uuid]));
@@ -396,7 +394,7 @@ impl InnerHandler {
                         exit(1);
                     }
                     ManagerState::Unauthorized => {
-                        eprintln!("The app is not authorized to use Bluetooth on this system");
+                        eprintln!("not authorized to use Bluetooth on this system");
                         exit(1);
                     }
                     ManagerState::PoweredOff => {
