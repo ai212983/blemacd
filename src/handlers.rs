@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::process::exit;
+use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use async_std::{task, task::JoinHandle};
@@ -37,13 +38,13 @@ pub enum CommandResult {
 pub enum Command {
     GetStatus,
     ListPeripherals,
-    FindPeripheral(String),
-    FindPeripheralByService(String),
+    FindPeripheralByService(Uuid),
     ConnectToPeripheral((Peripheral, AdvertisementData)),
     RegisterConnectedPeripheral(Peripheral),
     UnregisterConnectedPeripheral(Uuid),
     FindService(Peripheral, String),
-    FindCharacteristic(Peripheral, Service, String, Uuid),
+    FindCharacteristic(Peripheral, Service, String, uuid::Uuid),
+    // last uuid is not BLE uuid, but internal uuid used for hashmap
     ReadCharacteristic(Peripheral, Characteristic),
     WriteCharacteristic(Peripheral, Characteristic, Vec<u8>),
 }
@@ -90,23 +91,24 @@ impl EventMatcher for PeripheralDiscoveredMatcherByUUIDSubstr {
 }
 
 
-struct PeripheralDiscoveredMatcherByServiceUUIDSubstr {
-    uuid_substr: String,
+struct PeripheralDiscoveredMatcherByServiceUUID {
+    uuid: Uuid,
 }
 
-impl PeripheralDiscoveredMatcherByServiceUUIDSubstr {
-    fn new(uuid_substr: String) -> Self {
-        Self { uuid_substr }
+impl PeripheralDiscoveredMatcherByServiceUUID {
+    fn new(uuid: Uuid) -> Self {
+        Self { uuid }
     }
 }
 
-impl EventMatcher for PeripheralDiscoveredMatcherByServiceUUIDSubstr {
+impl EventMatcher for PeripheralDiscoveredMatcherByServiceUUID {
     fn matches(&self, event: &CentralEvent) -> EventMatch {
         info!("Incoming event: {:?}", event);
         if let CentralEvent::PeripheralDiscovered { peripheral, advertisement_data, rssi: _ } = event {
-            info!("discovered {:?}, matching against {}", peripheral, self.uuid_substr);
+            info!("discovered {:?}, matching against {}", peripheral, self.uuid);
             if advertisement_data.service_uuids().iter()
-                .find(|uuid| uuid.to_string().contains(&self.uuid_substr)).is_some() {
+                .find(|&uuid| uuid.eq(&self.uuid)).is_some() {
+                info!("event matched, returning result");
                 return EventMatch::Result(CommandResult::FindPeripheral(Some((peripheral.clone(), advertisement_data.clone()))))
             }
         }
@@ -136,7 +138,6 @@ impl EventMatcher for PeripheralConnectedMatcher {
         } else if let CentralEvent::PeripheralConnectFailed { peripheral, error } = event {
             if peripheral.id() == self.peripheral_id {
                 let id = peripheral.id().clone();
-                // TODO(df): send command to unregister ad data
                 error!("failed to connect to peripheral {:?}: {:?}", peripheral, error);
                 return EventMatch::Next(Command::UnregisterConnectedPeripheral(id))
             }
@@ -322,7 +323,7 @@ impl AsyncManager {
                                 handler.execute(command, sender, &central)
                             },
                             central_event = central_receiver.next() => if let Some(event) = central_event {
-                                 handler.handle_event(&event, &central);
+                                 handler.handle_event(&event);
                             }
                         }
                     }
@@ -352,31 +353,21 @@ impl InnerHandler {
                     Some(self.connected_peripherals.len()), //TODO(df): Update status output
                 )).unwrap()
             }
-            Command::FindPeripheral(uuid_substr) => {
-                info!("Finding peripheral with substring '{:?}'", uuid_substr);
-                if let Some(result) = self.find_connected_peripheral(uuid_substr.clone()) {
-                    info!("Found connected peripheral '{:?}'", result.0);
+            Command::FindPeripheralByService(uuid) => {
+                info!("Finding peripheral with service '{:?}'", uuid);
+                if let Some(result) = self.find_connected_peripheral_by_service(uuid.clone()) {
+                    info!("Found connected peripheral '{:?}', stopping Bluetooth scan", result.0);
+                    central.cancel_scan();
                     sender.blocking_send(CommandResult::FindPeripheral(Some(result))).unwrap();
                 } else {
                     // TODO(df): Add timeout and Ctrl+C handling
-                    self.add_matcher(sender, PeripheralDiscoveredMatcherByUUIDSubstr::new(uuid_substr));
-                }
-            }
-            Command::FindPeripheralByService(uuid_substr) => {
-                info!("Finding peripheral with service '{:?}'", uuid_substr);
-                if let Some(result) = self.find_connected_peripheral_by_service(uuid_substr.clone()) {
-                    info!("Found connected peripheral '{:?}'", result.0);
-                    sender.blocking_send(CommandResult::FindPeripheral(Some(result))).unwrap();
-                } else {
-                    // TODO(df): Add timeout and Ctrl+C handling
-                    self.add_matcher(sender, PeripheralDiscoveredMatcherByServiceUUIDSubstr::new(uuid_substr));
+                    self.add_matcher(sender, PeripheralDiscoveredMatcherByServiceUUID::new(uuid.clone()));
+                    central.scan_with_options(ScanOptions::default().include_services(&vec![uuid]));
                 }
             }
             Command::ConnectToPeripheral((peripheral, advertisement_data)) => {
                 let id = peripheral.id().clone();
-
-                // TODO(df): Do we need to look up in connected peripherals?
-                if let Some(result) = self.get_connected_peripheral(id) {
+                if let Some(result) = self.get_peripheral(id) {
                     sender.blocking_send(CommandResult::ConnectToPeripheral(result.0)).unwrap();
                 } else {
                     self.peripheral_ads.insert(id, advertisement_data.clone());
@@ -388,6 +379,7 @@ impl InnerHandler {
                 let id = peripheral.id().clone();
                 info!("registered peripheral {}, total {}", id, self.connected_peripherals.len());
                 self.connected_peripherals.insert(id, peripheral.clone());
+                sender.blocking_send(CommandResult::ConnectToPeripheral(peripheral)).unwrap();
             }
             Command::UnregisterConnectedPeripheral(uuid) => {
                 self.connected_peripherals.remove(&uuid);
@@ -417,7 +409,7 @@ impl InnerHandler {
         };
     }
 
-    fn handle_event(&mut self, event: &CentralEvent, central: &CentralManager) {
+    fn handle_event(&mut self, event: &CentralEvent) {
         match event {
             CentralEvent::ManagerStateChanged { new_state } => {
                 self.state = *new_state;
@@ -435,48 +427,15 @@ impl InnerHandler {
                         // TODO(df): Clean up child handler
                     }
                     ManagerState::PoweredOn => {
-                        info!("bt is powered on, starting peripherals scan");
-                        //TODO(df): Run different type of peripherals search depending on params
+                        info!("Bluetooth is powered on, ready for processing");
 
-                        // for example, by service uuid:
-                        // central.scan_with_options(ScanOptions::default().allow_duplicates(false));
-
-
-                        // this will not work on MacOSX 12.1, see https://stackoverflow.com/a/70657368/1016019
+                        // Scanning without specifying service UUIDs will not work on MacOSX 12.1
+                        // see https://stackoverflow.com/a/70657368/1016019
                         // central.scan();
-
-                        // FROM_HERE(df): We have to set up status or ready flag or something, then start scanning once we know EXACTLY service UUID we are aiming for
                     }
                     _ => {}
                 }
-            } /*
-            CentralEvent::PeripheralDiscovered {
-                peripheral,
-                advertisement_data,
-                rssi: _,
-            } => {
-                info!("[PeripheralDiscovered]: {}", self.peripherals.len());
-                self.peripherals.insert(
-                    peripheral.id(),
-                    PeripheralInfo {
-                        peripheral: peripheral.clone(),
-                        advertisement_data: advertisement_data.clone(),
-                    },
-                );
-            } */
-            /*
-                        CentralEvent::GetPeripheralsResult {
-                            peripherals,
-                            tag: _,
-                        } => {
-                            for peripheral in peripherals {
-                                debug!("[GetPeripheralsResult]: {}", peripheral.id());
-                                if self.connected_peripherals.insert(peripheral.clone()) {
-                                    //println!("connecting to {})", peripheral.id());
-                                    central.connect(&peripheral);
-                                }
-                            }
-                        }*/
+            }
             CentralEvent::PeripheralDisconnected {
                 peripheral,
                 error: _,
@@ -484,25 +443,10 @@ impl InnerHandler {
                 self.connected_peripherals.remove(&peripheral.id());
                 info!("unregistered peripheral {}, total {}", peripheral.id(), self.connected_peripherals.len());
             }
-            CentralEvent::GetPeripheralsWithServicesResult {
-                peripherals,
-                tag: _,
-            } => {
-                debug!("[GetPeripheralsWithServicesResult]: {}", peripherals.len());
-                /*for peripheral in peripherals {
-                    println!("Discovered with result: {}", peripheral.id());
-                        if self.connected_peripherals.insert(p.clone()) {
-                        debug!("connecting to {})", p.id());
-                        self.central.connect(&p);
-                    }
-                } */
-            }
-
             _ => {}
         }
         let mut command_sender = self.command_sender.clone();
         let mut i = 0;
-        info!("handle {:?} event for {} matchers", event, self.matchers.len());
         while i < self.matchers.len() {
             info!("handle_event: {:?}", event);
             let result = self.matchers[i].0(event);
@@ -522,8 +466,6 @@ impl InnerHandler {
                 }
             }
         }
-
-        info!("event handling complete, {} matchers left", self.matchers.len());
     }
 
     fn add_matcher(&mut self, sender: oneshot::Sender<CommandResult>, matcher: impl EventMatcher + Send + 'static) {
@@ -532,26 +474,15 @@ impl InnerHandler {
         self.matchers.push(item);
     }
 
-    fn find_connected_peripheral(&mut self, uuid_substr: String) -> Option<(Peripheral, AdvertisementData)> {
-        let s = uuid_substr.as_str();
-        if let Some(peripheral) = self.connected_peripherals.values().find(|peripheral|
-            peripheral.id().to_string().contains(s)) {
-            Some((peripheral.clone(), self.peripheral_ads.get(&peripheral.id()).unwrap().clone()))
-        } else {
-            None
-        }
-    }
-
-    fn find_connected_peripheral_by_service(&self, uuid_substr: String) -> Option<(Peripheral, AdvertisementData)> {
-        let s = uuid_substr.as_str();
+    fn find_connected_peripheral_by_service(&self, uuid: Uuid) -> Option<(Peripheral, AdvertisementData)> {
         self.peripheral_ads.iter().find(|(_, ad)|
-            ad.service_uuids().iter().find(|service_uuid| service_uuid.to_string().contains(s)).is_some())
+            ad.service_uuids().iter().find(|&service_uuid| service_uuid.eq(&uuid)).is_some())
             .and_then(|(peripheral_uuid, ad)| {
                 Some((self.connected_peripherals.get(peripheral_uuid).unwrap().clone(), ad.clone()))
             })
     }
 
-    fn get_connected_peripheral(&self, uuid: Uuid) -> Option<(Peripheral, AdvertisementData)> {
+    fn get_peripheral(&self, uuid: Uuid) -> Option<(Peripheral, AdvertisementData)> {
         if let Some(peripheral) = self.connected_peripherals.get(&uuid) {
             Some((peripheral.clone(), self.peripheral_ads.get(&peripheral.id()).unwrap().clone()))
         } else {

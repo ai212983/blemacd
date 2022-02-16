@@ -118,12 +118,9 @@ impl Session {
                     COMMAND_STATUS => Command::GetStatus,
                     COMMAND_PERIPHERALS => Command::ListPeripherals,
                     _ => {
-                        info!("request for peripheral: '{:?}'", token);
-                        if token.starts_with(":") {
-                            Command::FindPeripheralByService(token.get(1..).unwrap().parse().unwrap())
-                        } else {
-                            Command::FindPeripheral(token.to_string())
-                        }
+                        let uuid = Uuid::from_slice(hex::decode(token).unwrap().as_slice());
+                        info!("request for peripheral by service UUID: '{:?}'", hex::encode(uuid.shorten()));
+                        Command::FindPeripheralByService(uuid)
                     }
                 })
             } else {
@@ -163,9 +160,7 @@ impl Session {
                             let cmt = results.iter().find_map(|(command, _)|
                                 match command {
                                     Command::FindPeripheralByService(uuid) => Some(
-                                        format!("by UUID [{}]", uuid.to_string())),
-                                    Command::FindPeripheral(uuid_substr) => Some(
-                                        format!("by UUID substring [{}]", uuid_substr.clone())),
+                                        format!("by service UUID [{}]", hex::encode(uuid.shorten()))),
                                     _ => None
                                 });
 
@@ -187,8 +182,7 @@ impl Session {
                                 if let Some(range) = range {
                                     self.pending_ranges.insert(uuid, range);
                                 }
-                                Either::Left(Command::FindCharacteristic(peripheral.clone(), service.clone(), token.to_string(),
-                                                                         Uuid::from_bytes(*uuid.as_bytes())))
+                                Either::Left(Command::FindCharacteristic(peripheral.clone(), service.clone(), token.to_string(), uuid))
                             } else {
                                 Either::Right(format!("service found: {:?}", service))
                             }
@@ -200,7 +194,7 @@ impl Session {
                         if let Some(characteristic) = characteristic {
                             info!("characteristic found: {:?}", characteristic);
                             let pending_range = if let Command::FindCharacteristic(_, _, _, uuid) = command {
-                                self.pending_ranges.remove(&uuid::Uuid::from_bytes(uuid.bytes())) //TODO(df): implement `from`
+                                self.pending_ranges.remove(uuid)
                             } else {
                                 panic!("incorrect command mapping");
                             };
