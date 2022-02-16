@@ -68,29 +68,6 @@ trait EventMatcher {
     fn matches(&self, event: &CentralEvent) -> EventMatch;
 }
 
-struct PeripheralDiscoveredMatcherByUUIDSubstr {
-    uuid_substr: String,
-}
-
-impl PeripheralDiscoveredMatcherByUUIDSubstr {
-    fn new(uuid_substr: String) -> Self {
-        Self { uuid_substr }
-    }
-}
-
-impl EventMatcher for PeripheralDiscoveredMatcherByUUIDSubstr {
-    fn matches(&self, event: &CentralEvent) -> EventMatch {
-        if let CentralEvent::PeripheralDiscovered { peripheral, advertisement_data, rssi: _ } = event {
-            if peripheral.id().to_string().contains(&self.uuid_substr) {
-                info!("discovered {:?}", peripheral);
-                return EventMatch::Result(CommandResult::FindPeripheral(Some((peripheral.clone(), advertisement_data.clone()))))
-            }
-        }
-        EventMatch::None
-    }
-}
-
-
 struct PeripheralDiscoveredMatcherByServiceUUID {
     uuid: Uuid,
 }
