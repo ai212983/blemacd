@@ -51,7 +51,9 @@ impl AsyncManager {
                     loop {
                         select! {
                             command = command_receiver.next() => if let Some((command, sender)) = command {
-                                command.execute(&mut state, sender, &central)
+                                if let Some(matcher) = command.execute(&mut state, sender, &central, command_sender.clone()) {
+                                    state.add_matcher(matcher);
+                                }
                             },
                             central_event = central_receiver.next() => if let Some(event) = central_event {
                                 handle_event(&mut state, &event, command_sender.clone())

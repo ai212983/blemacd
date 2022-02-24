@@ -7,19 +7,17 @@ use core_bluetooth::central::peripheral::Peripheral;
 use core_bluetooth::ManagerState;
 use core_bluetooth::uuid::Uuid;
 use log::info;
-use postage::{*, prelude::Sink};
 use postage::mpsc::Sender;
+use postage::oneshot;
 
-use crate::commands::{Command, CommandResult, EventMatch, EventMatcher};
-
-type MatcherPair = (Box<EventMatcher>, oneshot::Sender<CommandResult>);
+use crate::commands::{Command, CommandResult, EventMatcher};
 
 pub struct DaemonState {
     pub started_at: Instant,
     pub peripherals: HashMap<Uuid, Peripheral>,
     pub advertisements: HashMap<Uuid, AdvertisementData>,
 
-    matchers: Vec<MatcherPair>,
+    matchers: Vec<EventMatcher>,
 
     state: ManagerState,
 }
@@ -36,8 +34,8 @@ impl DaemonState {
         }
     }
 
-    pub fn add_matcher(&mut self, sender: oneshot::Sender<CommandResult>, matcher: Box<EventMatcher>) {
-        self.matchers.push((matcher, sender));
+    pub fn add_matcher(&mut self, matcher: EventMatcher) {
+        self.matchers.push(matcher);
     }
 
     pub fn find_connected_peripheral_by_service(&self, uuid: Uuid) -> Option<(Peripheral, AdvertisementData)> {
@@ -95,20 +93,10 @@ pub fn handle_event(state: &mut DaemonState, event: &CentralEvent, mut command_s
     }
     let mut i = 0;
     while i < state.matchers.len() {
-        let result = state.matchers[i].0(event);
-        if result.is_none() {
-            i += 1;
+        if state.matchers[i](event) {
+            state.matchers.remove(i);
         } else {
-            let (_, mut sender) = state.matchers.remove(i);
-            match result {
-                EventMatch::Next(command) => {
-                    command_sender.try_send((command, sender)).ok();
-                }
-                EventMatch::Result(result) => {
-                    sender.blocking_send(result).unwrap();
-                }
-                EventMatch::None => {}
-            }
+            i += 1;
         }
     }
 }
