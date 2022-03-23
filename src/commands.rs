@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use core_bluetooth::central::{AdvertisementData, CentralEvent, CentralManager, ScanOptions};
@@ -9,9 +7,6 @@ use core_bluetooth::central::service::Service;
 use core_bluetooth::error::Error;
 use core_bluetooth::uuid::Uuid;
 use log::{error, info};
-use postage::mpsc::Sender;
-use postage::oneshot;
-use postage::prelude::Sink;
 
 use crate::daemon_state::DaemonState;
 
@@ -45,8 +40,7 @@ pub enum Command {
 // https://stackoverflow.com/questions/30411594/cannot-move-a-value-of-type-fnonce-when-moving-a-boxed-function
 
 impl Command {
-    pub fn execute(&self, state: &mut DaemonState, mut sender: oneshot::Sender<CommandResult>, central: &CentralManager,
-                   mut command_sender: Sender<(Command, oneshot::Sender<CommandResult>)>) -> Option<EventMatcher> {
+    pub fn execute(&self, state: &mut DaemonState, central: &CentralManager) -> Execution {
 
         // Sending command:
         // command_sender.try_send((command, sender)).ok();
@@ -54,34 +48,24 @@ impl Command {
         // Sending result:
         // sender.blocking_send(result).unwrap();
 
-        let command_sender = Arc::new(Mutex::new(Some(command_sender)));
-        let result_sender = Arc::new(Mutex::new(Some(sender)));
-
         match self {
-            Command::GetStatus => {
-                result_sender.lock().unwrap().take().unwrap().blocking_send(CommandResult::GetStatus(
-                    Duration::new(state.started_at.elapsed().as_secs(), 0),
-                    Some(state.peripherals.len()), //TODO(df): Update status output
-                ));
-                None
-            },
+            Command::GetStatus => Execution::Result(CommandResult::GetStatus(
+                Duration::new(state.started_at.elapsed().as_secs(), 0),
+                Some(state.peripherals.len()), //TODO(df): Update status output
+            )),
 
-            Command::ListPeripherals => {
-                result_sender.lock().unwrap().take().unwrap().blocking_send(CommandResult::ListPeripherals({
-                    state.peripherals.values().into_iter()
-                        .map(|p| return (p.clone(), state.advertisements.get(&p.id()).unwrap().clone()))
-                        .collect()
-                }));
-                None
-            },
+            Command::ListPeripherals => Execution::Result(CommandResult::ListPeripherals({
+                state.peripherals.values().into_iter()
+                    .map(|p| return (p.clone(), state.advertisements.get(&p.id()).unwrap().clone()))
+                    .collect()
+            })),
 
             Command::FindPeripheralByService(uuid) => {
                 info!("looking for peripheral with service [{}]", uuid);
                 if let Some(result) = state.find_connected_peripheral_by_service(uuid.clone()) {
                     info!("found already connected peripheral [{}]", result.0.id());
                     central.cancel_scan();
-                    result_sender.lock().unwrap().take().unwrap().blocking_send(CommandResult::FindPeripheral(Some(result)));
-                    return None;
+                    Execution::Result(CommandResult::FindPeripheral(Some(result)))
                 } else {
                     info!("no matching peripheral found, starting scan");
                     let uuid = uuid.clone();
@@ -90,81 +74,74 @@ impl Command {
 
                     // TODO(df): Add timeout and Ctrl+C handling
 
-                    Some(Box::new(move |event| {
+                    return Execution::Matcher(Box::new(move |event| {
                         if let CentralEvent::PeripheralDiscovered { peripheral, advertisement_data, rssi: _ } = event {
                             if advertisement_data.service_uuids().iter()
                                 .find(|&u| u.eq(&uuid)).is_some() {
-                                result_sender.lock().unwrap().take().unwrap().blocking_send(CommandResult::FindPeripheral(Some((peripheral.clone(), advertisement_data.clone()))));
-                                return true;
-                                // return send_result(CommandResult::FindPeripheral(Some((peripheral.clone(), advertisement_data.clone()))));
+                                return EventMatchResult::Result(CommandResult::FindPeripheral(Some((peripheral.clone(), advertisement_data.clone()))));
                             }
                         }
-                        false
+                        EventMatchResult::NoMatch
                     }))
                 }
             }
+
             Command::ConnectToPeripheral(ref peripheral, ref advertisement_data) => {
                 let id = peripheral.id().clone();
                 if let Some(result) = state.get_peripheral(id) {
-                    result_sender.lock().unwrap().take().unwrap().blocking_send(CommandResult::ConnectToPeripheral(result.0));
-                    None
+                    Execution::Result(CommandResult::ConnectToPeripheral(result.0))
                 } else {
                     state.advertisements.insert(id, advertisement_data.clone());
                     let peripheral_uuid = peripheral.id();
                     central.connect(&peripheral);
-                    Some(Box::new(move |event| {
+                    Execution::Matcher(Box::new(move |event| {
                         if let CentralEvent::PeripheralConnected { peripheral } = event {
                             if peripheral.id() == peripheral_uuid {
-                                command_sender.lock().unwrap().take().unwrap().blocking_send((
-                                    Command::RegisterConnectedPeripheral(peripheral.clone()),
-                                    result_sender.lock().unwrap().take().unwrap()));
-                                return true;
+                                return EventMatchResult::Command(Command::RegisterConnectedPeripheral(peripheral.clone()));
                             }
                         } else if let CentralEvent::PeripheralConnectFailed { peripheral, error } = event {
                             if peripheral.id() == peripheral_uuid {
                                 let id = peripheral.id().clone();
                                 error!("failed to connect to peripheral {:?}: {:?}", peripheral, error);
-                                command_sender.lock().unwrap().take().unwrap().blocking_send((
-                                    Command::UnregisterConnectedPeripheral(id),
-                                    result_sender.lock().unwrap().take().unwrap()));
-                                return true;
+                                return EventMatchResult::Command(Command::UnregisterConnectedPeripheral(id));
                             }
                         }
-                        false
+                        EventMatchResult::NoMatch
                     }))
                 }
             }
+
             Command::RegisterConnectedPeripheral(peripheral) => {
                 let id = peripheral.id().clone();
                 state.peripherals.insert(id, peripheral.clone());
                 info!("peripheral [{}]{} registered, total {}", id,
                     state.advertisements.get(&id).and_then(|ad| ad.local_name()).map_or(String::new(), |s| format!(" ({})", s)),
                     state.peripherals.len());
-                result_sender.lock().unwrap().take().unwrap().blocking_send(CommandResult::ConnectToPeripheral(peripheral.clone()));
-                None
+
+                Execution::Result(CommandResult::ConnectToPeripheral(peripheral.clone()))
             }
+
             Command::UnregisterConnectedPeripheral(uuid) => {
                 state.peripherals.remove(&uuid);
                 state.advertisements.remove(&uuid);
-                None
+                Execution::None
             }
+
             Command::FindService(ref peripheral, uuid_substr) => {
                 peripheral.discover_services();
 
                 let id = peripheral.id();
                 let uuid_substr = uuid_substr.clone();
 
-                Some(Box::new(move |event| {
+                Execution::Matcher(Box::new(move |event| {
                     if let CentralEvent::ServicesDiscovered { peripheral, services } = event {
                         if peripheral.id() == id {
                             let uuid_substr = uuid_substr.clone();
-                            result_sender.lock().unwrap().take().unwrap().blocking_send(
-                                CommandResult::FindService(peripheral.clone(), find_by_id_substr(uuid_substr, services)),
-                            );
-                            return true;
+                            return EventMatchResult::Result(
+                                CommandResult::FindService(peripheral.clone(), find_by_id_substr(uuid_substr, services)));
                         }
                     }
-                    false
+                    EventMatchResult::NoMatch
                 }))
             }
 
@@ -175,18 +152,17 @@ impl Command {
                 let service_id = service.id();
                 let uuid_substr = uuid_substr.clone();
 
-                Some(Box::new(move |event| {
+                Execution::Matcher(Box::new(move |event| {
                     if let CentralEvent::CharacteristicsDiscovered { peripheral, service, characteristics } = event {
                         if peripheral.id() == peripheral_id && service.id() == service_id {
                             let uuid_substr = uuid_substr.clone();
-                            result_sender.lock().unwrap().take().unwrap().blocking_send(
+                            return EventMatchResult::Result(
                                 CommandResult::FindCharacteristic(
                                     peripheral.clone(),
                                     find_by_id_substr(uuid_substr, characteristics)));
-                            return true;
                         }
                     }
-                    false
+                    EventMatchResult::NoMatch
                 }))
             }
             Command::ReadCharacteristic(ref peripheral, ref characteristic) => {
@@ -195,17 +171,17 @@ impl Command {
                 let peripheral_id = peripheral.id();
                 let characteristic_id = characteristic.id();
 
-                Some(Box::new(move |event| {
+                Execution::Matcher(Box::new(move |event| {
                     if let CentralEvent::CharacteristicValue { peripheral, characteristic, value } = event {
                         if peripheral.id() == peripheral_id && characteristic.id() == characteristic_id {
-                            result_sender.lock().unwrap().take().unwrap().blocking_send(CommandResult::ReadCharacteristic(
-                                peripheral.clone(),
-                                characteristic.clone(),
-                                if let Ok(value) = value { Some(value.clone()) } else { None }));
-                            return true;
+                            return EventMatchResult::Result(
+                                CommandResult::ReadCharacteristic(
+                                    peripheral.clone(),
+                                    characteristic.clone(),
+                                    if let Ok(value) = value { Some(value.clone()) } else { None }));
                         }
                     }
-                    false
+                    EventMatchResult::NoMatch
                 }))
             }
             Command::WriteCharacteristic(ref peripheral, ref characteristic, ref data) => {
@@ -214,20 +190,27 @@ impl Command {
                 let peripheral_id = peripheral.id();
                 let characteristic_id = characteristic.id();
 
-                Some(Box::new(move |event| {
+                Execution::Matcher(Box::new(move |event| {
                     if let CentralEvent::WriteCharacteristicResult { peripheral, characteristic, result } = event {
                         if peripheral.id() == peripheral_id && characteristic.id() == characteristic_id {
-                            result_sender.lock().unwrap().take().unwrap().blocking_send(
-                                CommandResult::WriteCharacteristic(peripheral.clone(), characteristic.clone(), result.clone()));
-                            return true;
+                            return EventMatchResult::Result(
+                                CommandResult::WriteCharacteristic(peripheral.clone(), characteristic.clone(), result.clone())
+                            );
                         }
                     }
-                    false
+                    EventMatchResult::NoMatch
                 }))
             }
         }
     }
 }
+
+pub enum Execution {
+    Result(CommandResult),
+    Matcher(EventMatcher),
+    None,
+}
+
 
 pub enum EventMatch {
     //Next(Command),
@@ -242,7 +225,13 @@ impl EventMatch {
     }
 }
 
-pub type EventMatcher = Box<dyn Fn(&CentralEvent) -> bool + Send>;
+pub enum EventMatchResult {
+    Command(Command),
+    Result(CommandResult),
+    NoMatch,
+}
+
+pub type EventMatcher = Box<dyn Fn(&CentralEvent) -> EventMatchResult + Send>;
 
 trait HasId {
     fn get_id(&self) -> Uuid;
