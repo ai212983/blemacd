@@ -36,6 +36,7 @@ pub enum Command {
     ReadCharacteristic(Peripheral, Characteristic),
     WriteCharacteristic(Peripheral, Characteristic, Vec<u8>),
 }
+
 // https://stackoverflow.com/questions/49142453/is-it-possible-to-call-a-fnonce-from-a-fn-without-a-mutex
 // https://stackoverflow.com/questions/30411594/cannot-move-a-value-of-type-fnonce-when-moving-a-boxed-function
 
@@ -51,7 +52,7 @@ impl Command {
         match self {
             Command::GetStatus => Execution::Result(CommandResult::GetStatus(
                 Duration::new(state.started_at.elapsed().as_secs(), 0),
-                Some(state.peripherals.len()), //TODO(df): Update status output
+                Some(state.peripherals.len())
             )),
 
             Command::ListPeripherals => Execution::Result(CommandResult::ListPeripherals({
@@ -136,9 +137,9 @@ impl Command {
                 Execution::Matcher(Box::new(move |event| {
                     if let CentralEvent::ServicesDiscovered { peripheral, services } = event {
                         if peripheral.id() == id {
-                            let uuid_substr = uuid_substr.clone();
+                            let find_fn = get_finder_by_id_substr(&uuid_substr);
                             return EventMatchResult::Result(
-                                CommandResult::FindService(peripheral.clone(), find_by_id_substr(uuid_substr, services)));
+                                CommandResult::FindService(peripheral.clone(), find_fn(services)));
                         }
                     }
                     EventMatchResult::NoMatch
@@ -155,11 +156,11 @@ impl Command {
                 Execution::Matcher(Box::new(move |event| {
                     if let CentralEvent::CharacteristicsDiscovered { peripheral, service, characteristics } = event {
                         if peripheral.id() == peripheral_id && service.id() == service_id {
-                            let uuid_substr = uuid_substr.clone();
+                            let find_fn = get_finder_by_id_substr(&uuid_substr);
                             return EventMatchResult::Result(
                                 CommandResult::FindCharacteristic(
                                     peripheral.clone(),
-                                    find_by_id_substr(uuid_substr, characteristics)));
+                                    find_fn(characteristics)));
                         }
                     }
                     EventMatchResult::NoMatch
@@ -249,11 +250,13 @@ impl HasId for Characteristic {
     }
 }
 
-// TODO(df): Rework into `get_finder_by_id(id_substr: String)`
-fn find_by_id_substr<T>(id_substr: String, items: &Result<Vec<T>, Error>) -> Option<T> where T: HasId + Clone {
-    let id_substr = id_substr.as_str();
-    return items.as_ref().ok()
-        .and_then(|items| items.iter().find(|item| item.get_id().to_string().contains(id_substr)))
-        .map(|item| item.clone());
+fn get_finder_by_id_substr<T>(id_substr: &String) -> impl Fn(&Result<Vec<T>, Error>) -> Option<T> where T: HasId + Clone {
+    let id_substr = id_substr.clone();
+    let result = move |items: &Result<Vec<T>, Error>| -> Option<T> {
+        let id_substr = id_substr.as_str();
+        return items.as_ref().ok()
+            .and_then(|items| items.iter().find(|item| item.get_id().to_string().contains(id_substr)))
+            .map(|item| item.clone())
+    };
+    return result;
 }
-
