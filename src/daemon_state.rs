@@ -16,8 +16,6 @@ pub struct DaemonState {
     pub peripherals: HashMap<Uuid, Peripheral>,
     pub advertisements: HashMap<Uuid, AdvertisementData>,
 
-    matchers: Vec<(oneshot::Sender<CommandResult>, EventMatcher)>,
-
     state: ManagerState,
 }
 
@@ -28,13 +26,8 @@ impl DaemonState {
             peripherals: Default::default(),
             advertisements: Default::default(),
 
-            matchers: vec![],
             state: ManagerState::Unknown,
         }
-    }
-
-    pub fn add_matcher(&mut self, result_sender: oneshot::Sender<CommandResult>, matcher: EventMatcher) {
-        self.matchers.push((result_sender, matcher));
     }
 
     pub fn find_connected_peripheral_by_service(&self, uuid: Uuid) -> Option<(Peripheral, AdvertisementData)> {
@@ -54,6 +47,7 @@ impl DaemonState {
     }
 }
 
+//TODO(df): move into DaemonState
 pub fn handle_event(state: &mut DaemonState, event: &CentralEvent) {
     match event {
         CentralEvent::ManagerStateChanged { new_state } => {
