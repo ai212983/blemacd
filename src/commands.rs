@@ -212,20 +212,6 @@ pub enum Execution {
     None,
 }
 
-
-pub enum EventMatch {
-    //Next(Command),
-    //Result(CommandResult),
-    None,
-    Present,
-}
-
-impl EventMatch {
-    pub fn is_none(&self) -> bool {
-        matches!(*self, EventMatch::None)
-    }
-}
-
 pub enum EventMatchResult {
     Command(Command),
     Result(CommandResult),
