@@ -2,7 +2,8 @@ use std::pin::Pin;
 
 use futures::{
     stream::{Fuse, FusedStream, Stream, StreamExt},
-    task::{Context, Poll}};
+    task::{Context, Poll},
+};
 use pin_project_lite::pin_project;
 
 pin_project! {
@@ -19,14 +20,17 @@ pin_project! {
 /// and bool field indicating if control stream is closed.
 impl<St: Stream, CSt: Stream> ShuttingDownStream<St, CSt> {
     pub fn new(stream: St, control_stream: CSt) -> Self {
-        Self { stream: stream.fuse(), control_stream: control_stream.fuse() }
+        Self {
+            stream: stream.fuse(),
+            control_stream: control_stream.fuse(),
+        }
     }
 }
 
 impl<St, CSt> FusedStream for ShuttingDownStream<St, CSt>
-    where
-        St: Stream,
-        CSt: Stream,
+where
+    St: Stream,
+    CSt: Stream,
 {
     fn is_terminated(&self) -> bool {
         self.stream.is_terminated() || self.control_stream.is_terminated()

@@ -10,7 +10,7 @@ pub fn get_slice(vector: &Vec<u8>, slice: Option<(Option<usize>, Option<usize>)>
             (Some(start), None) => &vector[start..],
             (None, Some(end)) => &vector[..end],
             (None, None) => &vector[..],
-        }
+        },
     }
 }
 
@@ -31,22 +31,27 @@ fn adjust_bytes(source: &Vec<u8>, size: usize) -> Vec<u8> {
     }
 }
 
-pub fn replace_slice(source: &Vec<u8>, value: &Vec<u8>, range: Option<(Option<usize>, Option<usize>)>) -> Vec<u8> {
+pub fn replace_slice(
+    source: &Vec<u8>,
+    value: &Vec<u8>,
+    range: Option<(Option<usize>, Option<usize>)>,
+) -> Vec<u8> {
     if let Some(range) = range {
         let len = source.len();
         let mut v = source.clone();
         match range {
-            (Some(start), Some(end)) => v.splice(start..end, adjust_bytes(&value, end - start).into_iter()),
+            (Some(start), Some(end)) => {
+                v.splice(start..end, adjust_bytes(&value, end - start).into_iter())
+            }
             (Some(start), None) => v.splice(start.., adjust_bytes(&value, len - start).into_iter()),
             (None, Some(end)) => v.splice(..end, adjust_bytes(&value, end).into_iter()),
-            (None, None) => v.splice(.., adjust_bytes(&value, len))
+            (None, None) => v.splice(.., adjust_bytes(&value, len)),
         };
         v
     } else {
         adjust_bytes(value, source.len())
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -64,25 +69,80 @@ mod tests {
     fn replace_slice_ok() {
         assert_eq!(replace_slice(&vec![1, 2, 3], &vec![1, 4], None), &[1, 4, 0]);
         assert_eq!(replace_slice(&vec![1], &vec![1, 4], None), &[1]);
-        assert_eq!(replace_slice(&vec![1, 2, 3], &vec![0, 0, 1, 2, 4], None), &[0, 0, 1]);
+        assert_eq!(
+            replace_slice(&vec![1, 2, 3], &vec![0, 0, 1, 2, 4], None),
+            &[0, 0, 1]
+        );
         assert_eq!(replace_slice(&vec![1, 2, 3], &vec![4], None), &[4, 0, 0]);
 
-        assert_eq!(replace_slice(&vec![1, 2, 3], &vec![5, 4], Some((Some(0), Some(2)))), &[5, 4, 3]);
-        assert_eq!(replace_slice(&vec![1, 2, 3], &vec![4], Some((Some(0), Some(2)))), &[4, 0, 3]);
-        assert_eq!(replace_slice(&vec![1, 2, 3], &vec![4, 5, 6, 7, 8], Some((Some(0), Some(2)))), &[4, 5, 3]);
+        assert_eq!(
+            replace_slice(&vec![1, 2, 3], &vec![5, 4], Some((Some(0), Some(2)))),
+            &[5, 4, 3]
+        );
+        assert_eq!(
+            replace_slice(&vec![1, 2, 3], &vec![4], Some((Some(0), Some(2)))),
+            &[4, 0, 3]
+        );
+        assert_eq!(
+            replace_slice(
+                &vec![1, 2, 3],
+                &vec![4, 5, 6, 7, 8],
+                Some((Some(0), Some(2))),
+            ),
+            &[4, 5, 3]
+        );
 
-        assert_eq!(replace_slice(&vec![1, 2, 3], &vec![4, 5, 6, 7, 8], Some((Some(1), Some(2)))), &[1, 4, 3]);
+        assert_eq!(
+            replace_slice(
+                &vec![1, 2, 3],
+                &vec![4, 5, 6, 7, 8],
+                Some((Some(1), Some(2))),
+            ),
+            &[1, 4, 3]
+        );
 
-        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((None, Some(3)))), &[6, 7, 0, 4]);
-        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6], Some((None, Some(3)))), &[6, 0, 0, 4]);
-        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7, 8, 9], Some((None, Some(3)))), &[6, 7, 8, 4]);
+        assert_eq!(
+            replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((None, Some(3)))),
+            &[6, 7, 0, 4]
+        );
+        assert_eq!(
+            replace_slice(&vec![1, 2, 3, 4], &vec![6], Some((None, Some(3)))),
+            &[6, 0, 0, 4]
+        );
+        assert_eq!(
+            replace_slice(&vec![1, 2, 3, 4], &vec![6, 7, 8, 9], Some((None, Some(3)))),
+            &[6, 7, 8, 4]
+        );
 
-        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((Some(1), None))), &[1, 6, 7, 0]);
-        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6], Some((Some(1), None))), &[1, 6, 0, 0]);
-        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![0, 6, 7, 8, 9], Some((Some(1), None))), &[1, 0, 6, 7]);
+        assert_eq!(
+            replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((Some(1), None))),
+            &[1, 6, 7, 0]
+        );
+        assert_eq!(
+            replace_slice(&vec![1, 2, 3, 4], &vec![6], Some((Some(1), None))),
+            &[1, 6, 0, 0]
+        );
+        assert_eq!(
+            replace_slice(
+                &vec![1, 2, 3, 4],
+                &vec![0, 6, 7, 8, 9],
+                Some((Some(1), None)),
+            ),
+            &[1, 0, 6, 7]
+        );
 
-        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((None, None))), &[6, 7, 0, 0]);
-        assert_eq!(replace_slice(&vec![1, 2, 3, 4], &vec![6, 7, 8, 9, 10, 11], Some((None, None))), &[6, 7, 8, 9]);
+        assert_eq!(
+            replace_slice(&vec![1, 2, 3, 4], &vec![6, 7], Some((None, None))),
+            &[6, 7, 0, 0]
+        );
+        assert_eq!(
+            replace_slice(
+                &vec![1, 2, 3, 4],
+                &vec![6, 7, 8, 9, 10, 11],
+                Some((None, None)),
+            ),
+            &[6, 7, 8, 9]
+        );
     }
 
     #[test]

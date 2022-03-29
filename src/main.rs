@@ -10,13 +10,16 @@ use async_std::{
 use core_bluetooth::uuid::Uuid;
 use env_logger::{Builder, Env};
 use futures::{
-    AsyncBufReadExt, AsyncWriteExt, channel::mpsc, future::{Either, Future, FutureExt}, select, sink::SinkExt,
-    StreamExt,
+    channel::mpsc,
+    future::{Either, Future, FutureExt},
+    select,
+    sink::SinkExt,
+    AsyncBufReadExt, AsyncWriteExt, StreamExt,
 };
 use log::*;
 
-use blemacd::{commands::*, handlers::*};
 use blemacd::util::{byte_slices::*, input_token::*, shutting_down_stream::*};
+use blemacd::{commands::*, handlers::*};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 type Sender<T> = mpsc::UnboundedSender<T>;
@@ -49,7 +52,11 @@ async fn streams_accept_loop<P: AsRef<Path>>(path: P) -> Result<()> {
     Ok(())
 }
 
-async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx: u32) -> Result<()> {
+async fn peer_reader_loop(
+    mut broker: Sender<PeerEvent>,
+    stream: UnixStream,
+    idx: u32,
+) -> Result<()> {
     let stream = Arc::new(stream);
     let reader = BufReader::new(&*stream);
     let mut lines = AsyncBufReadExt::lines(reader);
@@ -61,7 +68,8 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
             stream: stream.clone(),
             shutdown: shutdown_receiver,
         })
-        .await.unwrap();
+        .await
+        .unwrap();
 
     let shutdown = Arc::new(shutdown_sender);
     while let Some(line) = lines.next().await {
@@ -71,12 +79,12 @@ async fn peer_reader_loop(mut broker: Sender<PeerEvent>, stream: UnixStream, idx
                 peer_id: idx,
                 shutdown: shutdown.clone(),
             })
-            .await.unwrap();
+            .await
+            .unwrap();
     }
 
     Ok(())
 }
-
 
 struct Session {
     controller: Controller,
@@ -112,7 +120,11 @@ impl Session {
     }
 
     /// This function contains main application logic
-    fn next_command(&mut self, input: &mut String, results: &Vec<(Command, CommandResult)>) -> Either<Command, String> {
+    fn next_command(
+        &mut self,
+        input: &mut String,
+        results: &Vec<(Command, CommandResult)>,
+    ) -> Either<Command, String> {
         if results.len() == 0 {
             if let InputToken::Address(token, _) = consume_token(input) {
                 Either::Left(match token.as_str() {
@@ -120,7 +132,10 @@ impl Session {
                     COMMAND_PERIPHERALS => Command::ListPeripherals,
                     _ => {
                         let uuid = Uuid::from_slice(hex::decode(token).unwrap().as_slice());
-                        info!("request for peripheral by service UUID: [{}]", hex::encode(uuid.shorten()));
+                        info!(
+                            "request for peripheral by service UUID: [{}]",
+                            hex::encode(uuid.shorten())
+                        );
                         Command::FindPeripheralByService(uuid)
                     }
                 })
@@ -138,9 +153,9 @@ impl Session {
                         Either::Right(status)
                     }
                     CommandResult::ListPeripherals(peripherals) => {
-                        let descriptions = peripherals.into_iter()
-                            .map(move |(p, _a)|
-                                format!("{:?}", p))
+                        let descriptions = peripherals
+                            .into_iter()
+                            .map(move |(p, _a)| format!("{:?}", p))
                             .collect::<Vec<String>>();
                         Either::Right(format!(
                             "{} peripherals connected\n{}",
@@ -148,27 +163,40 @@ impl Session {
                             descriptions.join("\n")
                         ))
                     }
-                    CommandResult::FindPeripheral(info) =>
+                    CommandResult::FindPeripheral(info) => {
                         if let Some((p, a)) = info {
                             Either::Left(Command::ConnectToPeripheral(p.clone(), a.clone()))
                         } else {
                             Either::Right("peripheral match not found".to_string())
-                        },
+                        }
+                    }
                     CommandResult::ConnectToPeripheral(peripheral) => {
                         info!("peripheral located '{:?}'", peripheral);
                         if input.is_empty() {
-                            let cmt = results.iter().find_map(|(command, _)|
-                                match command {
-                                    Command::FindPeripheralByService(uuid) => Some(
-                                        format!("by service UUID [{}]", hex::encode(uuid.shorten()))),
-                                    _ => None
-                                });
+                            let cmt = results.iter().find_map(|(command, _)| match command {
+                                Command::FindPeripheralByService(uuid) => Some(format!(
+                                    "by service UUID [{}]",
+                                    hex::encode(uuid.shorten())
+                                )),
+                                _ => None,
+                            });
 
-                            Either::Right(format!("peripheral [{}] {}", peripheral.id(), cmt.unwrap_or("".to_string())))
+                            Either::Right(format!(
+                                "peripheral [{}] {}",
+                                peripheral.id(),
+                                cmt.unwrap_or("".to_string())
+                            ))
                         } else {
                             if let InputToken::Address(token, _) = consume_token(input) {
-                                info!("peripheral [{}] searching for service {:?}", peripheral.id(), input);
-                                Either::Left(Command::FindService(peripheral.clone(), token.to_string()))
+                                info!(
+                                    "peripheral [{}] searching for service {:?}",
+                                    peripheral.id(),
+                                    input
+                                );
+                                Either::Left(Command::FindService(
+                                    peripheral.clone(),
+                                    token.to_string(),
+                                ))
                             } else {
                                 Either::Right("connected to peripheral".to_string())
                             }
@@ -177,12 +205,20 @@ impl Session {
                     CommandResult::FindService(peripheral, service) => {
                         if let Some(service) = service {
                             if let InputToken::Address(token, range) = consume_token(input) {
-                                info!("service found: '{:?}', searching for characteristic: {:?}", service, token);
+                                info!(
+                                    "service found: '{:?}', searching for characteristic: {:?}",
+                                    service, token
+                                );
                                 let uuid = uuid::Uuid::new_v4();
                                 if let Some(range) = range {
                                     self.pending_ranges.insert(uuid, range);
                                 }
-                                Either::Left(Command::FindCharacteristic(peripheral.clone(), service.clone(), token.to_string(), uuid))
+                                Either::Left(Command::FindCharacteristic(
+                                    peripheral.clone(),
+                                    service.clone(),
+                                    token.to_string(),
+                                    uuid,
+                                ))
                             } else {
                                 Either::Right(format!("service found: {:?}", service))
                             }
@@ -193,11 +229,12 @@ impl Session {
                     CommandResult::FindCharacteristic(peripheral, characteristic) => {
                         if let Some(characteristic) = characteristic {
                             info!("characteristic found '{:?}'", characteristic);
-                            let pending_range = if let Command::FindCharacteristic(_, _, _, uuid) = command {
-                                self.pending_ranges.remove(uuid)
-                            } else {
-                                panic!("incorrect command mapping");
-                            };
+                            let pending_range =
+                                if let Command::FindCharacteristic(_, _, _, uuid) = command {
+                                    self.pending_ranges.remove(uuid)
+                                } else {
+                                    panic!("incorrect command mapping");
+                                };
                             Either::Left({
                                 if let Some(range) = pending_range {
                                     self.ranges.insert(characteristic.id(), range);
@@ -208,7 +245,10 @@ impl Session {
                                             characteristic.id(),
                                             Box::new(|v| if v == 0 { 1 } else { 0 }),
                                         );
-                                        Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
+                                        Command::ReadCharacteristic(
+                                            peripheral.clone(),
+                                            characteristic.clone(),
+                                        )
                                     }
                                     InputToken::Addition(delta, min, max) => {
                                         self.pending_changes.insert(
@@ -228,24 +268,33 @@ impl Session {
                                                 }
                                             }),
                                         );
-                                        Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
+                                        Command::ReadCharacteristic(
+                                            peripheral.clone(),
+                                            characteristic.clone(),
+                                        )
                                     }
                                     InputToken::Address(token, _) => {
                                         let value = hex::decode(token).unwrap();
                                         if pending_range.is_some() {
                                             let v = bytes_to_u128(&value);
-                                            self.pending_changes.insert(
-                                                characteristic.id(),
-                                                Box::new(move |_| v),
-                                            );
-                                            Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
+                                            self.pending_changes
+                                                .insert(characteristic.id(), Box::new(move |_| v));
+                                            Command::ReadCharacteristic(
+                                                peripheral.clone(),
+                                                characteristic.clone(),
+                                            )
                                         } else {
                                             Command::WriteCharacteristic(
-                                                peripheral.clone(), characteristic.clone(), value,
+                                                peripheral.clone(),
+                                                characteristic.clone(),
+                                                value,
                                             )
                                         }
                                     }
-                                    InputToken::None => Command::ReadCharacteristic(peripheral.clone(), characteristic.clone())
+                                    InputToken::None => Command::ReadCharacteristic(
+                                        peripheral.clone(),
+                                        characteristic.clone(),
+                                    ),
                                 }
                             })
                         } else {
@@ -258,20 +307,36 @@ impl Session {
                             let range = self.ranges.remove(id);
                             let sliced_value = get_slice(value, range);
                             if let Some((_, change)) = self.pending_changes.remove_entry(id) {
-                                info!("characteristic [{}] read ({}), now updating", characteristic.id(), hex::encode(sliced_value));
+                                info!(
+                                    "characteristic [{}] read ({}), now updating",
+                                    characteristic.id(),
+                                    hex::encode(sliced_value)
+                                );
                                 Either::Left({
                                     debug!("sliced value: {:?}", sliced_value);
-                                    let updated_slice = change(bytes_to_u128(&sliced_value.to_vec())).to_le_bytes().to_vec();
+                                    let updated_slice =
+                                        change(bytes_to_u128(&sliced_value.to_vec()))
+                                            .to_le_bytes()
+                                            .to_vec();
                                     //TODO(df): limit value according to specified bytes range?
-                                    debug!("updating value: {:?} - {:?} -> {:?}",
-                                           hex::encode(value),
-                                           hex::encode(&updated_slice),
-                                           hex::encode(replace_slice(value, &updated_slice, range)));
+                                    debug!(
+                                        "updating value: {:?} - {:?} -> {:?}",
+                                        hex::encode(value),
+                                        hex::encode(&updated_slice),
+                                        hex::encode(replace_slice(value, &updated_slice, range))
+                                    );
                                     Command::WriteCharacteristic(
-                                        peripheral.clone(), characteristic.clone(), replace_slice(value, &updated_slice, range))
+                                        peripheral.clone(),
+                                        characteristic.clone(),
+                                        replace_slice(value, &updated_slice, range),
+                                    )
                                 })
                             } else {
-                                info!("characteristic [{}] read range {:?}", characteristic.id(), range);
+                                info!(
+                                    "characteristic [{}] read range {:?}",
+                                    characteristic.id(),
+                                    range
+                                );
                                 Either::Right(hex::encode(sliced_value))
                             }
                         } else {
@@ -293,7 +358,8 @@ async fn peer_writer_loop(
     controller: Controller,
     messages: &mut Receiver<String>,
     stream: Arc<UnixStream>,
-    shutdown: Receiver<Void>) -> Result<()> {
+    shutdown: Receiver<Void>,
+) -> Result<()> {
     let mut stream = &*stream;
     let mut events = ShuttingDownStream::new(messages, shutdown);
 
@@ -344,7 +410,6 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
         };
 
         match peer_event {
-
             // When processing commands, broker_loop job is to execute command and return Reply
             // to be processed by peer_writer_loop.
             // Some commands can be done immediately, like status or peripherals list.
@@ -352,10 +417,15 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
             // Other commands requires time to be processed, like connect to peripheral,
             // discover service, read from characteristic. They shouldn't block execution thread,
             // so new task::spawn will be created.
-            PeerEvent::Command { id, peer_id, shutdown: _ } =>
+            PeerEvent::Command {
+                id,
+                peer_id,
+                shutdown: _,
+            } => {
                 if let Some(peer) = peers.get_mut(&peer_id) {
                     peer.send(id.clone()).await.unwrap();
                 }
+            }
             PeerEvent::NewPeer {
                 idx,
                 stream,
@@ -376,7 +446,8 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
                                 &mut client_receiver,
                                 stream.clone(),
                                 shutdown,
-                            ).await;
+                            )
+                            .await;
 
                             // One-liner will terminate peer_writer_loop fast enough
                             // to leave no pending messages but pending commands to be processed.
@@ -387,7 +458,8 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
 
                             disconnect_sender
                                 .send((idx, client_receiver, stream.clone()))
-                                .await.unwrap();
+                                .await
+                                .unwrap();
                             res
                         });
                     }
@@ -400,7 +472,6 @@ async fn broker_loop(events: Receiver<PeerEvent>) {
     drop(disconnect_sender); // 6
     while let Some((_name, _pending_replies, _stream)) = disconnect_receiver.next().await {}
 }
-
 
 #[derive(Debug)]
 enum PeerEvent {
@@ -417,8 +488,8 @@ enum PeerEvent {
 }
 
 fn spawn_and_log_error<F>(fut: F) -> task::JoinHandle<()>
-    where
-        F: Future<Output=Result<()>> + Send + 'static,
+where
+    F: Future<Output = Result<()>> + Send + 'static,
 {
     task::spawn(async move {
         if let Err(e) = fut.await {

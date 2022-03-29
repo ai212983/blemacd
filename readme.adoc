@@ -28,7 +28,6 @@ It is based on Apple's {url-corebt}[CoreBluetooth library] and its {url-corebt-w
 * Better status (include path, number of connections and uptime?)
 * Better https://rust-cli.github.io/book/in-depth/signals.html[signals handling], namely `Ctrl+C`
 * Options for commands (like format output)
-* Run rustfmt
 * Homebrew formula
 * Colorize output?
 ** https://crates.io/crates/colored

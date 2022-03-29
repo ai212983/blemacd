@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::process::exit;
 use std::time::Instant;
 
-use core_bluetooth::central::{AdvertisementData, CentralEvent};
 use core_bluetooth::central::peripheral::Peripheral;
-use core_bluetooth::ManagerState;
+use core_bluetooth::central::{AdvertisementData, CentralEvent};
 use core_bluetooth::uuid::Uuid;
+use core_bluetooth::ManagerState;
 use log::info;
 
 pub struct DaemonState {
@@ -27,17 +27,32 @@ impl DaemonState {
         }
     }
 
-    pub fn find_connected_peripheral_by_service(&self, uuid: Uuid) -> Option<(Peripheral, AdvertisementData)> {
-        self.advertisements.iter().find(|(_, ad)|
-            ad.service_uuids().iter().find(|&service_uuid| service_uuid.eq(&uuid)).is_some())
+    pub fn find_connected_peripheral_by_service(
+        &self,
+        uuid: Uuid,
+    ) -> Option<(Peripheral, AdvertisementData)> {
+        self.advertisements
+            .iter()
+            .find(|(_, ad)| {
+                ad.service_uuids()
+                    .iter()
+                    .find(|&service_uuid| service_uuid.eq(&uuid))
+                    .is_some()
+            })
             .and_then(|(peripheral_uuid, ad)| {
-                Some((self.peripherals.get(peripheral_uuid).unwrap().clone(), ad.clone()))
+                Some((
+                    self.peripherals.get(peripheral_uuid).unwrap().clone(),
+                    ad.clone(),
+                ))
             })
     }
 
     pub fn get_peripheral(&self, uuid: Uuid) -> Option<(Peripheral, AdvertisementData)> {
         if let Some(peripheral) = self.peripherals.get(&uuid) {
-            Some((peripheral.clone(), self.advertisements.get(&peripheral.id()).unwrap().clone()))
+            Some((
+                peripheral.clone(),
+                self.advertisements.get(&peripheral.id()).unwrap().clone(),
+            ))
         } else {
             None
         }
@@ -75,7 +90,11 @@ impl DaemonState {
                 error: _,
             } => {
                 self.peripherals.remove(&peripheral.id());
-                info!("unregistered peripheral {}, total {}", peripheral.id(), self.peripherals.len());
+                info!(
+                    "unregistered peripheral {}, total {}",
+                    peripheral.id(),
+                    self.peripherals.len()
+                );
             }
             _ => {}
         }
