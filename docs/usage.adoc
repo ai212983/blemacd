@@ -108,6 +108,9 @@ List of connected peripherals
 
 Whenever input doesn't match a command, it is treated as a bluez-like path, `<peripheral>/<SERVICE>/<CHARACTERISTIC>`.
 
+[WARNING]
+.This is disabled until Apple fix https://stackoverflow.com/a/70657368/1016019[background BLE scanning] (supposedly in macOS 12.3).
+====
 `<peripheral>`::
 Daemon will try to match input string to peripheral UUID and if there is a match, will connect to that peripheral.
 
@@ -116,13 +119,14 @@ Daemon will try to match input string to peripheral UUID and if there is a match
 ❯ nc -U /tmp/blemacd.sock <<< f69
 connected to peripheral [472df789-71f0-4d87-a47f-4e818ba79f69] (Hue ambiance lamp)
 ----
+====
 
 It is also possible to connect to peripheral by service UUID:
 
 [source,shell]
 ----
-❯ nc -U /tmp/blemacd.sock <<< :fe0f
-connected to peripheral [472df789-71f0-4d87-a47f-4e818ba79f69] (Hue ambiance lamp) by service [fe0f]
+❯ nc -U /tmp/blemacd.sock <<< fe0f
+connected to peripheral [472df789-71f0-4d87-a47f-4e818ba79f69] (Hue ambiance lamp) by service UUID [0000fe0f-0000-1000-8000-00805f9b34fb]
 ----
 
 `<peripheral>/<service>`::
@@ -130,7 +134,7 @@ Locate a service at peripheral.
 
 [source,shell]
 ----
-❯ nc -U /tmp/blemacd.sock <<< f69/32bd
+❯ nc -U /tmp/blemacd.sock <<< fe0f/32bd
 service found: Service { id: Uuid(932c32bd-0000-47a2-835a-a8d455b859dd), primary: false, service: CBService(0x7ff25b605ae0) }
 ----
 
@@ -140,17 +144,17 @@ Result is in hex format.
 
 [source,shell]
 ----
-❯ nc -U /tmp/blemacd.sock <<< f69/32bd/0007
+❯ nc -U /tmp/blemacd.sock <<< fe0f/32bd/0007
 01010002017703029900
 ----
 
-It is possible to specify range for characteristic:
+To specify range for characteristic:
 
 [source,shell]
 ----
-❯ nc -U /tmp/blemacd.sock <<< f69/32bd/0007[5]
+❯ nc -U /tmp/blemacd.sock <<< fe0f/32bd/0007[5]
 77
-❯ nc -U /tmp/blemacd.sock <<< f69/32bd/0007[8..]
+❯ nc -U /tmp/blemacd.sock <<< fe0f/32bd/0007[8..]
 9900
 ----
 
@@ -159,11 +163,11 @@ Write a value to characteristic.
 
 [source,shell]
 ----
-❯ nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[5]/10                <1>
+❯ nc -U /tmp/blemacd.sock <<< fe0f/32bd/0007[5]/10                <1>
 
-❯ nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[5]/-25               <2>
+❯ nc -U /tmp/blemacd.sock <<< fe0f/32bd/0007[5]/-25               <2>
 
-❯ nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[8..]/-30[153..454]   <3>
+❯ nc -U /tmp/blemacd.sock <<< fe0f/32bd/0007[8..]/-30[153..454]   <3>
 ----
 
 <1> Like with reading, it is possible to specify a range for writing.

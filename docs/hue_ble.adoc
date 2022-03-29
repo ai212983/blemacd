@@ -32,7 +32,7 @@ Bluetooth logs location on my Pixel 3 with Android 11
 
 [source,shell]
 ----
-❯ nc -U /tmp/blemacd.sock <<< :fe0f/59dd/0002
+❯ nc -U /tmp/blemacd.sock <<< fe0f/59dd/0002
 00
 ----
 
@@ -40,7 +40,7 @@ Toggle
 
 [source,shell]
 ----
-❯ nc -U /tmp/blemacd.sock <<< :fe0f/59dd/0002/!
+❯ nc -U /tmp/blemacd.sock <<< fe0f/59dd/0002/!
 Ok(())
 ----
 
@@ -50,10 +50,10 @@ Ok(())
 
 [source,shell]
 ----
-❯ nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[5]
+❯ nc -U /tmp/blemacd.sock <<< fe0f/32bd/0007[5]
 fe
 
-❯ nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[5]/+30[1..254]
+❯ nc -U /tmp/blemacd.sock <<< fe0f/32bd/0007[5]/+30[1..254]
 Ok(())
 ----
 
@@ -63,10 +63,10 @@ Ok(())
 
 [source,shell]
 ----
-❯ nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[8..]
+❯ nc -U /tmp/blemacd.sock <<< fe0f/32bd/0007[8..]
 9a00
 
-❯ nc -U /tmp/blemacd.sock <<< :fe0f/32bd/0007[8..]/+40[153..454]
+❯ nc -U /tmp/blemacd.sock <<< fe0f/32bd/0007[8..]/+40[153..454]
 Ok(())
 ----
 
