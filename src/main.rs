@@ -313,22 +313,6 @@ async fn peer_writer_loop(
     Ok(())
 }
 
-#[derive(Debug)]
-struct Reply {
-    message: String,
-    origin: String,
-}
-
-impl Reply {
-    fn as_oneliner(&self) -> String {
-        self.message.clone()
-    }
-    fn as_reply(&self) -> String {
-        format!("[{}]: {}\n", &self.origin, &self.message.clone())
-    }
-}
-
-
 // Base logic taken from https://book.async.rs/tutorial/handling_disconnection.html#final-code
 async fn broker_loop(events: Receiver<PeerEvent>) {
     let (_handler, controller) = AsyncManager::new();
