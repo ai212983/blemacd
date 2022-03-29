@@ -15,7 +15,8 @@ use futures::{
 };
 use log::*;
 
-use blemacd::{byte_slices::*, commands::*, handlers::*, input_token::*, shutting_down_stream::*};
+use blemacd::{commands::*, handlers::*};
+use blemacd::util::{byte_slices::*, input_token::*, shutting_down_stream::*};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 type Sender<T> = mpsc::UnboundedSender<T>;
