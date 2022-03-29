@@ -7,7 +7,7 @@ use postage::{*, prelude::Sink};
 use uuid::Uuid;
 
 use crate::commands::*;
-use crate::daemon_state::{DaemonState, handle_event};
+use crate::daemon_state::DaemonState;
 
 pub struct Controller {
     sender: mpsc::Sender<(Command, oneshot::Sender<CommandResult>)>,
@@ -90,7 +90,7 @@ impl AsyncManager {
                         },
 
                         central_event = central_receiver.next() => if let Some(event) = central_event {
-                            handle_event(&mut state, &event);
+                            state.handle_event(&event);
                             matchers.retain(|uuid, matcher| {
                                 match matcher(&event) {
                                     EventMatchResult::Result(result) => {

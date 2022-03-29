@@ -7,9 +7,6 @@ use core_bluetooth::central::peripheral::Peripheral;
 use core_bluetooth::ManagerState;
 use core_bluetooth::uuid::Uuid;
 use log::info;
-use postage::oneshot;
-
-use crate::commands::{CommandResult, EventMatcher};
 
 pub struct DaemonState {
     pub started_at: Instant,
@@ -45,43 +42,42 @@ impl DaemonState {
             None
         }
     }
-}
 
-//TODO(df): move into DaemonState
-pub fn handle_event(state: &mut DaemonState, event: &CentralEvent) {
-    match event {
-        CentralEvent::ManagerStateChanged { new_state } => {
-            state.state = *new_state;
-            match new_state {
-                ManagerState::Unsupported => {
-                    eprintln!("Bluetooth is not supported on this system");
-                    exit(1);
-                }
-                ManagerState::Unauthorized => {
-                    eprintln!("not authorized to use Bluetooth on this system");
-                    exit(1);
-                }
-                ManagerState::PoweredOff => {
-                    eprintln!("Bluetooth is disabled, please enable it");
-                    // TODO(df): Clean up child handler
-                }
-                ManagerState::PoweredOn => {
-                    info!("Bluetooth is powered on, ready for processing");
+    pub fn handle_event(&mut self, event: &CentralEvent) {
+        match event {
+            CentralEvent::ManagerStateChanged { new_state } => {
+                self.state = *new_state;
+                match new_state {
+                    ManagerState::Unsupported => {
+                        eprintln!("Bluetooth is not supported on this system");
+                        exit(1);
+                    }
+                    ManagerState::Unauthorized => {
+                        eprintln!("not authorized to use Bluetooth on this system");
+                        exit(1);
+                    }
+                    ManagerState::PoweredOff => {
+                        eprintln!("Bluetooth is disabled, please enable it");
+                        // TODO(df): Clean up child handler
+                    }
+                    ManagerState::PoweredOn => {
+                        info!("Bluetooth is powered on, ready for processing");
 
-                    // Scanning without specifying service UUIDs will not work on MacOSX 12.1
-                    // see https://stackoverflow.com/a/70657368/1016019
-                    // central.scan();
+                        // Scanning without specifying service UUIDs will not work on MacOSX 12.1
+                        // see https://stackoverflow.com/a/70657368/1016019
+                        // central.scan();
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+            CentralEvent::PeripheralDisconnected {
+                peripheral,
+                error: _,
+            } => {
+                self.peripherals.remove(&peripheral.id());
+                info!("unregistered peripheral {}, total {}", peripheral.id(), self.peripherals.len());
+            }
+            _ => {}
         }
-        CentralEvent::PeripheralDisconnected {
-            peripheral,
-            error: _,
-        } => {
-            state.peripherals.remove(&peripheral.id());
-            info!("unregistered peripheral {}, total {}", peripheral.id(), state.peripherals.len());
-        }
-        _ => {}
     }
 }
