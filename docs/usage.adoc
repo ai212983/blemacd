@@ -86,23 +86,19 @@ Connect socket and input/output via std.
 ❯ nc -U /tmp/blemacd.sock
 ----
 
-List all discovered peripherals and exit.
-
-[source,shell]
-----
-❯ nc -U /tmp/blemacd.sock <<< all
-----
-
 === Commands list
 
 `status`::
 Returns daemon status
 
-`all`::
-List of peripherals discovered
-
-`connected`::
+`peripherals`::
 List of connected peripherals
+
+[source,shell]
+
+----
+❯ nc -U /tmp/blemacd.sock <<< peripherals
+----
 
 === Addressing peripherals, services and characteristics
 

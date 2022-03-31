@@ -155,17 +155,17 @@ impl Session {
                     CommandResult::ListPeripherals(peripherals) => {
                         let descriptions = peripherals
                             .into_iter()
-                            .map(move |(p, _a)| format!("{:?}", p))
+                            .map(move |(_, a)| format!("{:?}", a))
                             .collect::<Vec<String>>();
                         Either::Right(format!(
-                            "{} peripherals connected\n{}",
+                            "connected peripherals: {}\n {}",
                             descriptions.len(),
-                            descriptions.join("\n")
+                            descriptions.join("\n ")
                         ))
                     }
                     CommandResult::FindPeripheral(info) => {
-                        if let Some((p, a)) = info {
-                            Either::Left(Command::ConnectToPeripheral(p.clone(), a.clone()))
+                        if let Some(p) = info {
+                            Either::Left(Command::ConnectToPeripheral(p.clone()))
                         } else {
                             Either::Right("peripheral match not found".to_string())
                         }

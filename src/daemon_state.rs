@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fmt;
+use std::fmt::Formatter;
 use std::process::exit;
 use std::time::Instant;
 
@@ -8,10 +10,49 @@ use core_bluetooth::uuid::Uuid;
 use core_bluetooth::ManagerState;
 use log::info;
 
+pub struct Advertisement {
+    pub uuid: Uuid,
+    pub data: AdvertisementData,
+    pub rssi: i32,
+}
+
+impl Advertisement {
+    pub fn new(uuid: Uuid, data: AdvertisementData, rssi: i32) -> Self {
+        Self { uuid, data, rssi }
+    }
+}
+
+impl Clone for Advertisement {
+    fn clone(&self) -> Self {
+        Advertisement::new(self.uuid.clone(), self.data.clone(), self.rssi)
+    }
+}
+
+impl fmt::Debug for Advertisement {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let service_uuids = self
+            .data
+            .service_uuids()
+            .iter()
+            .map(|u| hex::encode(u.shorten()))
+            .collect::<Vec<String>>();
+        write!(
+            f,
+            "{} ({}), {}/{}",
+            self.data.local_name().unwrap_or(&*self.uuid.to_string()),
+            service_uuids.join(", "),
+            self.rssi,
+            self.data.tx_power_level().unwrap_or(0)
+        )
+        .unwrap();
+        Ok(())
+    }
+}
+
 pub struct DaemonState {
     pub started_at: Instant,
     pub peripherals: HashMap<Uuid, Peripheral>,
-    pub advertisements: HashMap<Uuid, AdvertisementData>,
+    pub advertisements: HashMap<Uuid, Advertisement>,
 
     state: ManagerState,
 }
@@ -27,23 +68,18 @@ impl DaemonState {
         }
     }
 
-    pub fn find_connected_peripheral_by_service(
-        &self,
-        uuid: Uuid,
-    ) -> Option<(Peripheral, AdvertisementData)> {
+    pub fn find_connected_peripheral_by_service(&self, uuid: Uuid) -> Option<Peripheral> {
         self.advertisements
             .iter()
             .find(|(_, ad)| {
-                ad.service_uuids()
+                ad.data
+                    .service_uuids()
                     .iter()
                     .find(|&service_uuid| service_uuid.eq(&uuid))
                     .is_some()
             })
-            .and_then(|(peripheral_uuid, ad)| {
-                Some((
-                    self.peripherals.get(peripheral_uuid).unwrap().clone(),
-                    ad.clone(),
-                ))
+            .and_then(|(peripheral_uuid, _ad)| {
+                Some(self.peripherals.get(peripheral_uuid).unwrap().clone())
             })
     }
 
@@ -51,7 +87,11 @@ impl DaemonState {
         if let Some(peripheral) = self.peripherals.get(&uuid) {
             Some((
                 peripheral.clone(),
-                self.advertisements.get(&peripheral.id()).unwrap().clone(),
+                self.advertisements
+                    .get(&peripheral.id())
+                    .unwrap()
+                    .data
+                    .clone(),
             ))
         } else {
             None
@@ -89,10 +129,12 @@ impl DaemonState {
             CentralEvent::PeripheralDiscovered {
                 peripheral,
                 advertisement_data,
-                rssi: _,
+                rssi,
             } => {
-                self.advertisements
-                    .insert(peripheral.id(), advertisement_data.clone());
+                self.advertisements.insert(
+                    peripheral.id(),
+                    Advertisement::new(peripheral.id(), advertisement_data.clone(), *rssi),
+                );
             }
 
             CentralEvent::PeripheralDisconnected {

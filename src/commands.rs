@@ -3,20 +3,20 @@ use std::time::Duration;
 use core_bluetooth::central::characteristic::{Characteristic, WriteKind};
 use core_bluetooth::central::peripheral::Peripheral;
 use core_bluetooth::central::service::Service;
-use core_bluetooth::central::{AdvertisementData, CentralEvent, CentralManager, ScanOptions};
+use core_bluetooth::central::{CentralEvent, CentralManager};
 use core_bluetooth::error::Error;
 use core_bluetooth::uuid::Uuid;
 use log::{error, info};
 use postage::mpsc::Sender;
 use postage::prelude::Sink;
 
-use crate::daemon_state::DaemonState;
+use crate::daemon_state::{Advertisement, DaemonState};
 
 #[derive(Debug, Clone)]
 pub enum CommandResult {
     GetStatus(Duration, Option<usize>),
-    ListPeripherals(Vec<(Peripheral, AdvertisementData)>),
-    FindPeripheral(Option<(Peripheral, AdvertisementData)>),
+    ListPeripherals(Vec<(Peripheral, Advertisement)>),
+    FindPeripheral(Option<Peripheral>),
     ConnectToPeripheral(Peripheral),
     FindService(Peripheral, Option<Service>),
     FindCharacteristic(Peripheral, Option<Characteristic>),
@@ -29,7 +29,7 @@ pub enum Command {
     GetStatus,
     ListPeripherals,
     FindPeripheralByService(Uuid),
-    ConnectToPeripheral(Peripheral, AdvertisementData),
+    ConnectToPeripheral(Peripheral),
     RegisterConnectedPeripheral(Peripheral),
     UnregisterConnectedPeripheral(Uuid),
     FindService(Peripheral, String),
@@ -78,7 +78,7 @@ impl Command {
             Command::FindPeripheralByService(uuid) => {
                 info!("looking for peripheral with service [{}]", uuid);
                 if let Some(result) = state.find_connected_peripheral_by_service(uuid.clone()) {
-                    info!("found already connected peripheral [{}]", result.0.id());
+                    info!("found already connected peripheral [{}]", result.id());
                     Execution::Result(CommandResult::FindPeripheral(Some(result)))
                 } else {
                     info!("no matching peripheral found, starting scan");
@@ -102,7 +102,7 @@ impl Command {
                                 .is_some()
                             {
                                 return EventMatchResult::Result(CommandResult::FindPeripheral(
-                                    Some((peripheral.clone(), advertisement_data.clone())),
+                                    Some(peripheral.clone()),
                                 ));
                             }
                         }
@@ -111,12 +111,11 @@ impl Command {
                 }
             }
 
-            Command::ConnectToPeripheral(ref peripheral, ref advertisement_data) => {
+            Command::ConnectToPeripheral(ref peripheral) => {
                 let id = peripheral.id().clone();
                 if let Some(result) = state.get_peripheral(id) {
                     Execution::Result(CommandResult::ConnectToPeripheral(result.0))
                 } else {
-                    state.advertisements.insert(id, advertisement_data.clone());
                     let peripheral_uuid = peripheral.id();
                     central.connect(&peripheral);
                     Execution::Matcher(Box::new(move |event| {
@@ -154,7 +153,7 @@ impl Command {
                     state
                         .advertisements
                         .get(&id)
-                        .and_then(|ad| ad.local_name())
+                        .and_then(|ad| ad.data.local_name())
                         .map_or(String::new(), |s| format!(" ({})", s)),
                     state.peripherals.len()
                 );

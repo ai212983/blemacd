@@ -4,7 +4,6 @@ use async_std::{task, task::JoinHandle};
 use core_bluetooth::central::{CentralManager, ScanOptions};
 use core_bluetooth::uuid::Uuid as BtUuid;
 use futures::{select, StreamExt};
-use log::*;
 use postage::{prelude::Sink, *};
 use uuid::Uuid;
 
