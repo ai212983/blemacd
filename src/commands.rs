@@ -7,6 +7,8 @@ use core_bluetooth::central::{AdvertisementData, CentralEvent, CentralManager, S
 use core_bluetooth::error::Error;
 use core_bluetooth::uuid::Uuid;
 use log::{error, info};
+use postage::mpsc::Sender;
+use postage::prelude::Sink;
 
 use crate::daemon_state::DaemonState;
 
@@ -41,7 +43,12 @@ pub enum Command {
 // https://stackoverflow.com/questions/30411594/cannot-move-a-value-of-type-fnonce-when-moving-a-boxed-function
 
 impl Command {
-    pub fn execute(&self, state: &mut DaemonState, central: &CentralManager) -> Execution {
+    pub fn execute(
+        &self,
+        state: &mut DaemonState,
+        central: &CentralManager,
+        scan_sender: &mut Sender<(Uuid, bool)>,
+    ) -> Execution {
         // Sending command:
         // command_sender.try_send((command, sender)).ok();
         //
@@ -72,13 +79,12 @@ impl Command {
                 info!("looking for peripheral with service [{}]", uuid);
                 if let Some(result) = state.find_connected_peripheral_by_service(uuid.clone()) {
                     info!("found already connected peripheral [{}]", result.0.id());
-                    central.cancel_scan();
                     Execution::Result(CommandResult::FindPeripheral(Some(result)))
                 } else {
                     info!("no matching peripheral found, starting scan");
                     let uuid = uuid.clone();
 
-                    central.scan_with_options(ScanOptions::default().include_services(&vec![uuid]));
+                    scan_sender.blocking_send((uuid, true)).unwrap();
 
                     // TODO(df): Add timeout and Ctrl+C handling
 
