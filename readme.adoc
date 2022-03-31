@@ -16,7 +16,7 @@ It is based on Apple's {url-corebt}[CoreBluetooth library] and its {url-corebt-w
 
 * Better docs and HUE instructions
 * Handle or limit multiple connections?
-** Confirmation on command result (like status change)
+* Confirmation on command result (like status change)
 * Populating list of devices may be done by different API calls:
 ** `CentralManager::get_peripherals`/ `retrievePeripheralsWithIdentifiers`
 ** `CentralManager::get_peripherals_with_services`, `retrieveConnectedPeripheralsWithServices`
