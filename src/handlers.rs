@@ -1,13 +1,17 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use async_std::{task, task::JoinHandle};
-use core_bluetooth::central::CentralManager;
+use core_bluetooth::central::{CentralManager, ScanOptions};
+use core_bluetooth::uuid::Uuid as BtUuid;
 use futures::{select, StreamExt};
+use log::*;
 use postage::{prelude::Sink, *};
 use uuid::Uuid;
 
 use crate::commands::*;
 use crate::daemon_state::DaemonState;
+
+const CHANNEL_CAPACITY: usize = 100;
 
 pub struct Controller {
     sender: mpsc::Sender<(Command, oneshot::Sender<CommandResult>)>,
@@ -41,9 +45,11 @@ pub struct AsyncManager {
 impl AsyncManager {
     pub fn new() -> (Self, Controller) {
         let (input_command_sender, input_command_receiver) =
-            mpsc::channel::<(Command, oneshot::Sender<CommandResult>)>(100);
-        let (mut command_sender, command_receiver) = mpsc::channel::<(Command, Uuid)>(100);
-        let (mut output_sender, output_receiver) = mpsc::channel::<(CommandResult, Uuid)>(100);
+            mpsc::channel::<(Command, oneshot::Sender<CommandResult>)>(CHANNEL_CAPACITY);
+        let (mut command_sender, command_receiver) =
+            mpsc::channel::<(Command, Uuid)>(CHANNEL_CAPACITY);
+        let (mut output_sender, output_receiver) =
+            mpsc::channel::<(CommandResult, Uuid)>(CHANNEL_CAPACITY);
 
         let mut command_sender_internal = command_sender.clone();
         (
@@ -69,16 +75,39 @@ impl AsyncManager {
                     }
                 }),
                 processing_handle: task::spawn(async move {
+                    let (mut scan_sender, scan_receiver) =
+                        mpsc::channel::<(BtUuid, bool)>(CHANNEL_CAPACITY);
                     let (central, central_receiver) = CentralManager::new();
+
                     let mut command_receiver = command_receiver.fuse();
+                    let mut scan_receiver = scan_receiver.fuse();
                     let mut central_receiver = central_receiver.fuse();
+
                     let mut matchers = HashMap::<Uuid, EventMatcher>::new();
+                    let mut uuids_to_scan = HashSet::<BtUuid>::new();
                     let mut state = DaemonState::new();
 
                     loop {
                         select! {
+                            scan = scan_receiver.next() => if let Some((uuid, start_scan)) = scan {
+                                if if start_scan {
+                                    uuids_to_scan.insert(uuid)
+                                } else {
+                                    uuids_to_scan.remove(&uuid)
+                                } {
+                                    if uuids_to_scan.is_empty() {
+                                        central.cancel_scan();
+                                    } else {
+                                        let uuids: Vec<BtUuid> = uuids_to_scan.iter().cloned().collect();
+                                        central.scan_with_options(
+                                            ScanOptions::default()
+                                            .include_services(&uuids));
+                                    }
+                                }
+                            },
+
                              command = command_receiver.next() => if let Some((command, uuid)) = command {
-                                 match command.execute(&mut state, &central) {
+                                 match command.execute(&mut state, &central, &mut scan_sender) {
                                      Execution::Result(result) => {
                                          output_sender.send((result, uuid)).await.ok();
                                      },

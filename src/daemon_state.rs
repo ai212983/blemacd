@@ -85,6 +85,16 @@ impl DaemonState {
                     _ => {}
                 }
             }
+
+            CentralEvent::PeripheralDiscovered {
+                peripheral,
+                advertisement_data,
+                rssi: _,
+            } => {
+                self.advertisements
+                    .insert(peripheral.id(), advertisement_data.clone());
+            }
+
             CentralEvent::PeripheralDisconnected {
                 peripheral,
                 error: _,
