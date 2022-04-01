@@ -159,9 +159,13 @@ impl Session {
                             .map(move |(_, a)| format!("{:?}", a))
                             .collect::<Vec<String>>();
                         Either::Right(format!(
-                            "connected peripherals: {}\n {}",
+                            "connected peripherals: {}{}",
                             descriptions.len(),
-                            descriptions.join("\n ")
+                            if descriptions.is_empty() {
+                                "".to_string()
+                            } else {
+                                format!("\n {}", descriptions.join("\n "))
+                            }
                         ))
                     }
                     CommandResult::FindPeripheral(info) => {
