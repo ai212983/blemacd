@@ -2,7 +2,7 @@
 
 == Setting up
 
-Output is omitted for the sake of brevity.
+NOTE: Shell output is omitted for the sake of brevity.
 
 === Installation
 
@@ -102,22 +102,10 @@ List of connected peripherals
 
 === Addressing peripherals, services and characteristics
 
-Whenever input doesn't match a command, it is treated as a bluez-like path, `<peripheral>/<SERVICE>/<CHARACTERISTIC>`.
+Whenever input doesn't match a command, it is treated as a path, `<PERIPHERAL_PUBLIC_SERVICE>/<SERVICE>/<CHARACTERISTIC>`.
 
-[WARNING]
-.This is disabled until Apple fix https://stackoverflow.com/a/70657368/1016019[background BLE scanning] (supposedly in macOS 12.3).
-====
-`<peripheral>`::
-Daemon will try to match input string to peripheral UUID and if there is a match, will connect to that peripheral.
-
-[source,shell]
-----
-❯ nc -U /tmp/blemacd.sock <<< f69
-connected to peripheral [472df789-71f0-4d87-a47f-4e818ba79f69] (Hue ambiance lamp)
-----
-====
-
-It is also possible to connect to peripheral by service UUID:
+`<peripheral_public_service>/<service>`::
+Connect to peripheral with specified advertised public service.
 
 [source,shell]
 ----
