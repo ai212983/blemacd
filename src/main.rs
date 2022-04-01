@@ -1,4 +1,5 @@
 use std::collections::hash_map::{Entry, HashMap};
+use std::env;
 use std::sync::Arc;
 
 use async_std::{
@@ -498,13 +499,14 @@ where
     })
 }
 
-fn cleanup_socket() {
-    std::fs::remove_file(SOCKET_PATH)
+fn cleanup_socket(path: &str) {
+    std::fs::remove_file(path)
         .map_err(|err| eprintln!("{:?}", err))
         .ok();
 }
 
 pub fn main() {
+    let args: Vec<String> = env::args().collect();
     let env = Env::default();
 
     Builder::from_env(env)
@@ -512,12 +514,15 @@ pub fn main() {
         .format_timestamp_micros()
         .init();
 
-    cleanup_socket();
+    let default_path = SOCKET_PATH.to_string();
+    let socket_path = args.get(1).unwrap_or(&default_path).as_str();
 
-    task::block_on(streams_accept_loop(SOCKET_PATH))
+    cleanup_socket(socket_path);
+
+    task::block_on(streams_accept_loop(socket_path))
         .map_err(|err| eprintln!("{:?}", err))
         .ok();
 
-    cleanup_socket();
+    cleanup_socket(socket_path);
     info!("exiting application");
 }
